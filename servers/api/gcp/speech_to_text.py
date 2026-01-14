@@ -6,6 +6,7 @@ Cloud Speech-to-Text v2 모듈
 import asyncio
 from typing import AsyncGenerator
 
+from google.api_core.client_options import ClientOptions
 from google.cloud.speech_v2 import SpeechClient
 from google.cloud.speech_v2.types import cloud_speech
 
@@ -31,19 +32,23 @@ class CloudSpeechToText:
 
         settings = get_settings()
 
-        # Speech 클라이언트 생성
-        self._client = SpeechClient()
+        # Speech 클라이언트 생성 (Chirp 2를 위한 us-central1 엔드포인트 설정)
+        self._client = SpeechClient(
+            client_options=ClientOptions(
+                api_endpoint="us-central1-speech.googleapis.com",
+            )
+        )
 
-        # Recognizer 경로 설정
+        # Recognizer 경로 설정 (Chirp 2 모델은 us-central1 리전에서만 사용 가능)
         self._recognizer_name = (
-            f"projects/{settings.gcp_project_id}/locations/{settings.gcp_region}/recognizers/_"
+            f"projects/{settings.gcp_project_id}/locations/us-central1/recognizers/_"
         )
 
         self._initialized = True
         logger.info(
             "cloud_speech_initialized",
             project=settings.gcp_project_id,
-            region=settings.gcp_region,
+            region="us-central1",
         )
 
     async def transcribe_chunk(
@@ -60,13 +65,13 @@ class CloudSpeechToText:
             audio_data: 오디오 바이너리 데이터
             audio_format: 오디오 포맷 정보
             segment_id: 세그먼트 ID
-            language_codes: 인식할 언어 코드 목록 (기본값: ["ko-KR", "en-US", "ja-JP", "zh-CN"])
+            language_codes: 인식할 언어 코드 목록 (기본값: ["ko-KR"], us-central1에서는 단일 언어만 지원)
         """
         if not self._client:
             await self.initialize()
 
         if language_codes is None:
-            language_codes = ["ko-KR", "en-US", "ja-JP", "zh-CN"]
+            language_codes = ["ko-KR"]  # us-central1에서는 단일 언어만 지원
 
         try:
             # 오디오 인코딩 설정

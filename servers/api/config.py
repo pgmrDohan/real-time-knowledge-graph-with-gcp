@@ -31,11 +31,11 @@ class Settings(BaseSettings):
     )
 
     # ============================================
-    # Cloud Speech-to-Text
+    # Cloud Speech-to-Text (Chirp 2 모델 BCP-47 코드)
     # ============================================
     speech_language_codes: str = Field(
-        default="ko-KR,en-US,ja-JP,zh-CN",
-        description="STT 지원 언어 코드 (쉼표 구분)"
+        default="ko-KR",
+        description="STT 지원 언어 코드 (us-central1에서는 단일 언어만 지원)"
     )
 
     # ============================================
