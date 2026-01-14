@@ -16,6 +16,9 @@
     "skipLibCheck": true,
     "jsx": "react-jsx",
     "outDir": "./dist",
+    "composite": true,
+    "declaration": true,
+    "declarationMap": true,
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],

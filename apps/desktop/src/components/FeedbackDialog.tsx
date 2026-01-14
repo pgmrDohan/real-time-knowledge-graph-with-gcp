@@ -70,28 +70,26 @@ export function FeedbackDialog({
             animate={{ scale: 1, opacity: 1, y: 0 }}
             exit={{ scale: 0.9, opacity: 0, y: 20 }}
             transition={{ type: 'spring', stiffness: 300, damping: 25 }}
-            className="relative w-full max-w-md mx-4 bg-surface-800 border border-surface-600 rounded-2xl shadow-2xl overflow-hidden"
+            className="relative w-full max-w-md mx-4 bg-surface-800/90 backdrop-blur-sm border border-surface-600 rounded-xl shadow-2xl overflow-hidden"
             onClick={(e) => e.stopPropagation()}
           >
             {/* 헤더 */}
-            <div className="relative px-6 pt-6 pb-4">
+            <div className="relative px-4 pt-4 pb-3 border-b border-surface-700">
               <button
                 onClick={handleSkip}
-                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-gray-200 hover:bg-surface-700 rounded-lg transition-colors"
+                className="absolute top-4 right-4 p-2 text-gray-400 hover:text-white hover:bg-surface-700 rounded-lg transition-colors"
               >
-                <X size={18} />
+                <X size={16} />
               </button>
 
-              <div className="flex items-center gap-3 mb-2">
-                <div className="p-2 bg-neon-cyan/10 rounded-lg">
-                  <MessageSquare size={20} className="text-neon-cyan" />
-                </div>
-                <h2 className="text-lg font-semibold text-gray-100">
+              <div className="flex items-center gap-2 mb-2">
+                <MessageSquare size={16} className="text-neon-cyan" />
+                <h2 className="text-sm font-medium text-gray-300">
                   세션 피드백
                 </h2>
               </div>
 
-              <p className="text-sm text-gray-400">
+              <p className="text-xs text-gray-400 leading-relaxed">
                 생성된 지식 그래프에 대한 만족도를 평가해주세요.
                 피드백은 AI 모델 개선에 활용됩니다.
               </p>
@@ -99,32 +97,32 @@ export function FeedbackDialog({
 
             {/* 세션 요약 */}
             {sessionInfo && (
-              <div className="mx-6 mb-4 p-3 bg-surface-700/50 rounded-lg border border-surface-600">
+              <div className="mx-4 mt-4 p-3 bg-surface-700/50 rounded-lg border border-surface-600">
                 <div className="grid grid-cols-3 gap-4 text-center">
                   <div>
-                    <div className="text-lg font-bold text-neon-cyan">
+                    <div className="text-sm font-medium text-neon-cyan font-mono">
                       {sessionInfo.entitiesCount}
                     </div>
-                    <div className="text-xs text-gray-500">엔티티</div>
+                    <div className="text-xs text-gray-500 mt-0.5">엔티티</div>
                   </div>
                   <div>
-                    <div className="text-lg font-bold text-neon-magenta">
+                    <div className="text-sm font-medium text-neon-magenta font-mono">
                       {sessionInfo.relationsCount}
                     </div>
-                    <div className="text-xs text-gray-500">관계</div>
+                    <div className="text-xs text-gray-500 mt-0.5">관계</div>
                   </div>
                   <div>
-                    <div className="text-lg font-bold text-neon-yellow">
+                    <div className="text-sm font-medium text-neon-yellow font-mono">
                       {formatDuration(sessionInfo.durationSeconds)}
                     </div>
-                    <div className="text-xs text-gray-500">세션 시간</div>
+                    <div className="text-xs text-gray-500 mt-0.5">세션 시간</div>
                   </div>
                 </div>
               </div>
             )}
 
             {/* 별점 */}
-            <div className="px-6 mb-4">
+            <div className="px-4 mt-4 mb-4">
               <label className="block text-sm font-medium text-gray-300 mb-3">
                 만족도
               </label>
@@ -139,7 +137,7 @@ export function FeedbackDialog({
                     className="p-1 transition-transform hover:scale-110"
                   >
                     <Star
-                      size={32}
+                      size={28}
                       className={clsx(
                         'transition-colors',
                         (hoveredRating || rating) >= value
@@ -150,7 +148,7 @@ export function FeedbackDialog({
                   </button>
                 ))}
               </div>
-              <div className="text-center mt-2 text-sm text-gray-500">
+              <div className="text-center mt-2 text-xs text-gray-500">
                 {rating === 1 && '매우 불만족'}
                 {rating === 2 && '불만족'}
                 {rating === 3 && '보통'}
@@ -160,7 +158,7 @@ export function FeedbackDialog({
             </div>
 
             {/* 코멘트 */}
-            <div className="px-6 mb-6">
+            <div className="px-4 mb-4">
               <label className="block text-sm font-medium text-gray-300 mb-2">
                 추가 의견 (선택)
               </label>
@@ -168,7 +166,7 @@ export function FeedbackDialog({
                 value={comment}
                 onChange={(e) => setComment(e.target.value)}
                 placeholder="개선이 필요한 점이나 좋았던 점을 알려주세요..."
-                className="w-full h-24 px-3 py-2 bg-surface-900 border border-surface-600 rounded-lg text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-2 focus:ring-neon-cyan/50 focus:border-neon-cyan/50"
+                className="w-full h-20 px-3 py-2 bg-surface-700/50 border border-surface-600 rounded-lg text-sm text-gray-200 placeholder-gray-500 resize-none focus:outline-none focus:ring-2 focus:ring-neon-cyan/50 focus:border-neon-cyan/50"
                 maxLength={500}
               />
               <div className="text-right text-xs text-gray-600 mt-1">
@@ -177,7 +175,7 @@ export function FeedbackDialog({
             </div>
 
             {/* 버튼 */}
-            <div className="flex gap-3 px-6 pb-6">
+            <div className="flex gap-3 px-4 pb-4 border-t border-surface-700 pt-4">
               <button
                 onClick={handleSkip}
                 className="flex-1 px-4 py-2.5 bg-surface-700 hover:bg-surface-600 text-gray-300 rounded-lg text-sm font-medium transition-colors"
@@ -189,13 +187,14 @@ export function FeedbackDialog({
                 disabled={rating === 0 || isSubmitting}
                 className={clsx(
                   'flex-1 px-4 py-2.5 rounded-lg text-sm font-medium transition-all flex items-center justify-center gap-2',
+                  'disabled:opacity-50 disabled:cursor-not-allowed',
                   rating > 0 && !isSubmitting
-                    ? 'bg-neon-cyan text-surface-900 hover:bg-neon-cyan/90'
-                    : 'bg-surface-700 text-gray-500 cursor-not-allowed'
+                    ? 'bg-neon-cyan/10 text-neon-cyan border border-neon-cyan/30 hover:bg-neon-cyan/20'
+                    : 'bg-surface-700 text-gray-500 border border-surface-600'
                 )}
               >
                 {isSubmitting ? (
-                  <div className="w-4 h-4 border-2 border-surface-900/30 border-t-surface-900 rounded-full animate-spin" />
+                  <div className="w-4 h-4 border-2 border-neon-cyan/30 border-t-neon-cyan rounded-full animate-spin" />
                 ) : (
                   <>
                     <Send size={14} />
