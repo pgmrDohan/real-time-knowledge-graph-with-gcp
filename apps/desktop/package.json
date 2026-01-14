@@ -1,7 +1,7 @@
 {
   "name": "@rkg/desktop",
-  "version": "1.0.0",
-  "description": "실시간 지식 그래프 데스크톱 애플리케이션",
+  "version": "2.0.0",
+  "description": "실시간 지식 그래프 데스크톱 애플리케이션 - GCP 통합",
   "main": "dist/electron/main.js",
   "scripts": {
     "dev": "npm run build:electron && concurrently \"npm run dev:vite\" \"npm run dev:electron\"",
@@ -14,29 +14,27 @@
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {
-    "@rkg/graph-utils": "workspace:*",
-    "@rkg/shared-types": "workspace:*",
-    "clsx": "^2.1.0",
-    "framer-motion": "^10.17.0",
-    "lucide-react": "^0.303.0",
-    "react": "^18.2.0",
-    "react-dom": "^18.2.0",
-    "reactflow": "^11.10.1",
-    "zustand": "^4.4.7"
+    "clsx": "^2.1.1",
+    "framer-motion": "^12.26.2",
+    "lucide-react": "^0.562.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "reactflow": "^11.11.4",
+    "zustand": "^5.0.10"
   },
   "devDependencies": {
-    "@types/react": "^18.2.45",
-    "@types/react-dom": "^18.2.18",
-    "@vitejs/plugin-react": "^4.2.1",
-    "autoprefixer": "^10.4.16",
-    "concurrently": "^8.2.2",
-    "electron": "^28.1.0",
-    "electron-builder": "^24.9.1",
-    "postcss": "^8.4.32",
-    "tailwindcss": "^3.4.0",
-    "typescript": "^5.3.2",
-    "vite": "^5.0.10",
-    "wait-on": "^7.2.0"
+    "@types/react": "^19.2.8",
+    "@types/react-dom": "^19.2.3",
+    "@vitejs/plugin-react": "^5.1.2",
+    "autoprefixer": "^10.4.23",
+    "concurrently": "^9.2.1",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.4.0",
+    "postcss": "^8.5.6",
+    "tailwindcss": "^4.1.18",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1",
+    "wait-on": "^9.0.3"
   },
   "build": {
     "appId": "com.rkg.desktop",
@@ -59,4 +57,3 @@
     }
   }
 }
-

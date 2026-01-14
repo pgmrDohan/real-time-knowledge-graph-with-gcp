@@ -1,13 +1,13 @@
 """
 FastAPI 메인 애플리케이션
-실시간 지식 그래프 API 서버
+실시간 지식 그래프 API 서버 (GCP 기반)
 """
 
 import asyncio
 from contextlib import asynccontextmanager
 from typing import AsyncGenerator
 
-from fastapi import FastAPI, WebSocket
+from fastapi import FastAPI, WebSocket, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
@@ -16,8 +16,14 @@ from graph_state import get_graph_manager
 from logger import get_logger, setup_logging
 from nlp import get_nlp
 from redis_client import redis_manager
-from stt import get_stt
 from websocket import ws_handler
+
+# GCP 서비스 임포트
+from gcp.speech_to_text import get_speech_client
+from gcp.vertex_ai import get_vertex_client
+from gcp.storage import get_storage_client
+from gcp.bigquery_client import get_bigquery_client
+from gcp.feedback import get_feedback_manager
 
 # 로깅 설정
 setup_logging()
@@ -32,19 +38,38 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
         "application_starting",
         host=settings.host,
         port=settings.port,
-        debug=settings.debug,
+        gcp_project=settings.gcp_project_id,
+        region=settings.gcp_region,
     )
 
-    # 시작 시 초기화
     try:
         # Redis 연결
         await redis_manager.connect()
 
-        # STT 초기화
-        stt = await get_stt()
+        # GCP 서비스 초기화
+        logger.info("initializing_gcp_services")
+
+        # Cloud Speech-to-Text v2
+        await get_speech_client()
+        logger.info("cloud_speech_initialized")
+
+        # Vertex AI
+        await get_vertex_client()
+        logger.info("vertex_ai_initialized")
+
+        # Cloud Storage (선택적)
+        if settings.gcs_bucket_name:
+            await get_storage_client()
+            logger.info("cloud_storage_initialized")
+
+        # BigQuery (선택적)
+        if settings.enable_feedback:
+            await get_bigquery_client()
+            logger.info("bigquery_initialized")
 
         # NLP 초기화
-        nlp = await get_nlp()
+        await get_nlp()
+        logger.info("nlp_initialized")
 
         logger.info("application_initialized")
 
@@ -63,15 +88,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
 # FastAPI 앱 생성
 app = FastAPI(
     title="실시간 지식 그래프 API",
-    description="음성을 실시간으로 분석하여 지식 그래프를 생성하는 서비스",
-    version="1.0.0",
+    description="음성을 실시간으로 분석하여 지식 그래프를 생성하는 서비스 (GCP 기반)",
+    version="2.0.0",
     lifespan=lifespan,
 )
 
 # CORS 설정
+settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # 개발 환경용, 프로덕션에서는 제한 필요
+    allow_origins=["*"] if settings.debug else ["https://*.run.app"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -86,7 +112,12 @@ app.add_middleware(
 @app.get("/")
 async def root() -> dict[str, str]:
     """루트 엔드포인트"""
-    return {"service": "realtime-knowledge-graph", "status": "running"}
+    return {
+        "service": "realtime-knowledge-graph",
+        "version": "2.0.0",
+        "platform": "Google Cloud Platform",
+        "status": "running",
+    }
 
 
 @app.get("/health")
@@ -124,6 +155,17 @@ async def reset_graph_state(session_id: str) -> dict[str, str]:
     return {"status": "reset", "session_id": session_id}
 
 
+@app.get("/api/feedback/analytics")
+async def get_feedback_analytics() -> dict:
+    """피드백 분석 통계 조회"""
+    settings = get_settings()
+    if not settings.enable_feedback:
+        raise HTTPException(status_code=404, detail="Feedback feature is disabled")
+
+    feedback_manager = await get_feedback_manager()
+    return await feedback_manager.get_analytics()
+
+
 # ============================================
 # WebSocket 엔드포인트
 # ============================================
@@ -150,6 +192,3 @@ if __name__ == "__main__":
         reload=settings.debug,
         log_level=settings.log_level.lower(),
     )
-
-
-

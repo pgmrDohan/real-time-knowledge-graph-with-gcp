@@ -1,0 +1,78 @@
+# Cloud Build 구성
+# API 서버를 Cloud Run에 배포
+
+substitutions:
+  _SERVICE_NAME: knowledge-graph-api
+  _REGION: asia-northeast3
+  _VPC_CONNECTOR: knowledge-graph-vpc-connector
+  _REDIS_HOST: ""  # Memorystore 호스트
+  _GCS_BUCKET: ""  # Cloud Storage 버킷
+  _BQ_DATASET: knowledge_graph
+
+steps:
+  # 1. Docker 이미지 빌드
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'build'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '-t'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+      - '-f'
+      - 'servers/api/Dockerfile'
+      - 'servers/api'
+
+  # 2. Container Registry에 푸시
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - 'push'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+
+  # 3. Cloud Run 배포
+  - name: 'gcr.io/google.com/cloudsdktool/cloud-sdk'
+    entrypoint: gcloud
+    args:
+      - 'run'
+      - 'deploy'
+      - '${_SERVICE_NAME}'
+      - '--image'
+      - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+      - '--region'
+      - '${_REGION}'
+      - '--platform'
+      - 'managed'
+      - '--allow-unauthenticated'
+      - '--vpc-connector'
+      - '${_VPC_CONNECTOR}'
+      - '--vpc-egress'
+      - 'private-ranges-only'
+      - '--memory'
+      - '2Gi'
+      - '--cpu'
+      - '2'
+      - '--timeout'
+      - '300'
+      - '--concurrency'
+      - '80'
+      - '--min-instances'
+      - '0'
+      - '--max-instances'
+      - '10'
+      - '--set-env-vars'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},REDIS_HOST=${_REDIS_HOST},GCS_BUCKET_NAME=${_GCS_BUCKET},BQ_DATASET_ID=${_BQ_DATASET},LOG_FORMAT=json,DEBUG=false'
+
+images:
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:$COMMIT_SHA'
+  - 'gcr.io/$PROJECT_ID/${_SERVICE_NAME}:latest'
+
+options:
+  logging: CLOUD_LOGGING_ONLY
+  machineType: 'E2_HIGHCPU_8'
+
+timeout: '1200s'
+

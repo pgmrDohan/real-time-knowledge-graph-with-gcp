@@ -1,6 +1,7 @@
 /**
  * @rkg/shared-types
  * 실시간 지식 그래프 서비스의 모든 공유 타입 정의
+ * GCP 통합 버전
  */
 
 // ============================================
@@ -162,6 +163,7 @@ export type WSMessageType =
   | 'START_SESSION' // 세션 시작
   | 'END_SESSION' // 세션 종료
   | 'PING' // 연결 확인
+  | 'SUBMIT_FEEDBACK' // 피드백 제출
   // 서버 → 클라이언트
   | 'STT_PARTIAL' // 부분 STT 결과
   | 'STT_FINAL' // 최종 STT 결과
@@ -169,7 +171,9 @@ export type WSMessageType =
   | 'GRAPH_FULL' // 전체 그래프 (초기화 또는 복구)
   | 'PROCESSING_STATUS' // 처리 상태 업데이트
   | 'ERROR' // 에러 메시지
-  | 'PONG'; // Ping 응답
+  | 'PONG' // Ping 응답
+  | 'FEEDBACK_RESULT' // 피드백 결과
+  | 'REQUEST_FEEDBACK'; // 피드백 요청
 
 // ============================================
 // 오디오 관련 타입
@@ -196,7 +200,7 @@ export interface AudioChunkPayload {
  */
 export interface AudioFormat {
   /** 코덱 */
-  codec: 'pcm' | 'wav' | 'webm' | 'opus';
+  codec: 'pcm' | 'wav' | 'webm' | 'opus' | 'mp3' | 'flac';
   /** 샘플레이트 (Hz) */
   sampleRate: number;
   /** 채널 수 */
@@ -278,6 +282,7 @@ export type ProcessingStage =
   | 'NLP_ANALYZING' // 형태소 분석 중
   | 'EXTRACTING' // 엔티티/관계 추출 중
   | 'UPDATING_GRAPH' // 그래프 업데이트 중
+  | 'SAVING_DATA' // 데이터 저장 중
   | 'IDLE'; // 대기 중
 
 // ============================================
@@ -302,6 +307,50 @@ export interface SessionConfig {
   extractionMode: 'realtime' | 'batch';
   /** 그래프 초기 상태 (기존 그래프 이어서 사용 시) */
   initialGraphState?: GraphState;
+  /** 인식할 언어 코드 목록 */
+  languageCodes?: string[];
+}
+
+// ============================================
+// 피드백 관련 타입
+// ============================================
+
+/**
+ * 피드백 제출 페이로드
+ */
+export interface FeedbackPayload {
+  /** 만족도 (1-5) */
+  rating: number;
+  /** 사용자 코멘트 */
+  comment?: string;
+}
+
+/**
+ * 피드백 결과 페이로드
+ */
+export interface FeedbackResultPayload {
+  /** 성공 여부 */
+  success: boolean;
+  /** 메시지 */
+  message: string;
+  /** 저장된 오디오 URI */
+  audioUri?: string;
+  /** 저장된 그래프 URI */
+  graphUri?: string;
+}
+
+/**
+ * 피드백 요청 페이로드
+ */
+export interface RequestFeedbackPayload {
+  /** 세션 ID */
+  sessionId: string;
+  /** 엔티티 수 */
+  entitiesCount: number;
+  /** 관계 수 */
+  relationsCount: number;
+  /** 세션 지속 시간 (초) */
+  durationSeconds: number;
 }
 
 // ============================================
@@ -332,6 +381,8 @@ export type ErrorCode =
   | 'GRAPH_UPDATE_FAILED'
   | 'RATE_LIMITED'
   | 'SESSION_EXPIRED'
+  | 'FEEDBACK_FAILED'
+  | 'STORAGE_ERROR'
   | 'INTERNAL_ERROR';
 
 // ============================================
@@ -379,6 +430,3 @@ export const generateId = (): string => {
     return v.toString(16);
   });
 };
-
-
-

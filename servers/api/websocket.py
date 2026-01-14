@@ -1,6 +1,6 @@
 """
 WebSocket 엔드포인트 및 실시간 처리 파이프라인
-멀티태스킹 기반 병렬 처리
+멀티태스킹 기반 병렬 처리 + GCP 통합
 """
 
 import asyncio
@@ -13,6 +13,10 @@ from fastapi import WebSocket, WebSocketDisconnect
 
 from config import get_settings
 from extraction import get_extraction_pipeline
+from gcp.speech_to_text import get_speech_client
+from gcp.feedback import get_feedback_manager
+from gcp.storage import get_storage_client
+from gcp.bigquery_client import get_bigquery_client
 from graph_state import get_graph_manager
 from logger import LogContext, get_logger
 from models import (
@@ -20,17 +24,20 @@ from models import (
     AudioFormat,
     ErrorCode,
     ErrorPayload,
+    FeedbackPayload,
+    FeedbackResultPayload,
     GraphDelta,
     ProcessingStage,
     ProcessingStatusPayload,
+    RequestFeedbackPayload,
     STTFinalPayload,
     STTPartialPayload,
     WSMessage,
     WSMessageType,
 )
-from nlp import KoreanNLP, SemanticChunkBuilder, get_nlp
+from nlp import KoreanNLP, get_nlp
 from redis_client import get_redis
-from stt import GeminiSTT, STTAccumulator, get_stt
+from stt import STTAccumulator
 
 logger = get_logger(__name__)
 
@@ -45,6 +52,11 @@ class SessionState:
         self.sequence_counter = 0
         self.created_at = time.time()
         self.last_activity = time.time()
+        self.language_codes: list[str] | None = None
+        
+        # 세션 데이터 (피드백용)
+        self.accumulated_audio: list[bytes] = []
+        self.total_audio_duration_ms = 0
 
 
 class RealtimePipeline:
@@ -52,31 +64,25 @@ class RealtimePipeline:
     실시간 처리 파이프라인 - 병렬 멀티태스킹
     
     3개의 독립적인 워커가 병렬로 실행:
-    1. STT Worker: 오디오 → 텍스트 (5초마다 계속 실행)
-    2. NLP Worker: 텍스트 → 문장 분리/분석 (STT 결과 즉시 처리)
-    3. Extraction Worker: 완성된 문장 → 엔티티/관계 추출 (문장 완성 시 처리)
+    1. STT Worker: 오디오 → 텍스트 (Cloud Speech-to-Text v2)
+    2. NLP Worker: 텍스트 → 문장 분리/분석
+    3. Extraction Worker: 완성된 문장 → 엔티티/관계 추출 (Vertex AI)
     """
 
     def __init__(
         self,
         websocket: WebSocket,
         session: SessionState,
-        stt: GeminiSTT,
         nlp: KoreanNLP,
     ) -> None:
         self._ws = websocket
         self._session = session
-        self._stt = stt
         self._nlp = nlp
         
         # 독립적인 비동기 큐 (병렬 처리용)
         self._audio_queue: asyncio.Queue[tuple[bytes, AudioFormat]] = asyncio.Queue(maxsize=100)
         self._text_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
         self._sentence_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
-        
-        # 텍스트 누적 버퍼 (NLP 워커용)
-        self._text_buffer: str = ""
-        self._text_lock = asyncio.Lock()
         
         # 태스크
         self._tasks: list[asyncio.Task[Any]] = []
@@ -107,6 +113,10 @@ class RealtimePipeline:
             
             logger.debug("audio_chunk_received", size=len(audio_data), seq=payload.sequence_number)
             
+            # 세션 오디오 누적 (피드백용)
+            self._session.accumulated_audio.append(audio_data)
+            self._session.total_audio_duration_ms += payload.duration
+            
             # 큐가 가득 차면 오래된 것 버림 (백프레셔)
             if self._audio_queue.full():
                 try:
@@ -118,21 +128,23 @@ class RealtimePipeline:
             await self._audio_queue.put((audio_data, payload.format))
             self._session.last_activity = time.time()
             
-            logger.debug("audio_chunk_queued", queue_size=self._audio_queue.qsize())
-            
         except Exception as e:
             logger.error("audio_chunk_error", error=str(e))
 
     # ============================================
-    # Worker 1: STT (완전 독립 실행)
+    # Worker 1: STT (Cloud Speech-to-Text v2)
     # ============================================
     async def _stt_worker(self) -> None:
         """STT 워커 - 오디오 청크를 받아서 텍스트로 변환"""
         logger.info("stt_worker_started")
         
+        speech_client = await get_speech_client()
+        settings = get_settings()
+        language_codes = self._session.language_codes or settings.get_language_codes()
+        
         while self._session.is_active:
             try:
-                # 오디오 청크 대기 (타임아웃으로 주기적 체크)
+                # 오디오 청크 대기
                 try:
                     audio_data, audio_format = await asyncio.wait_for(
                         self._audio_queue.get(), timeout=0.5
@@ -142,15 +154,14 @@ class RealtimePipeline:
 
                 logger.info("stt_processing_audio", size=len(audio_data), codec=audio_format.codec)
                 
-                # 상태 업데이트
                 await self._send_status(ProcessingStage.STT_PROCESSING)
                 
                 segment_id = f"{self._session.session_id}_{self._session.sequence_counter}"
                 self._session.sequence_counter += 1
 
-                # STT 처리 (별도 스레드에서 실행되므로 블로킹 안 함)
-                result = await self._stt.transcribe_chunk(
-                    audio_data, audio_format, segment_id
+                # Cloud Speech-to-Text v2 처리
+                result = await speech_client.transcribe_chunk(
+                    audio_data, audio_format, segment_id, language_codes
                 )
 
                 if result and result.text.strip():
@@ -183,13 +194,11 @@ class RealtimePipeline:
         
         while self._session.is_active:
             try:
-                # 텍스트 대기
                 try:
                     new_text = await asyncio.wait_for(
                         self._text_queue.get(), timeout=0.5
                     )
                 except asyncio.TimeoutError:
-                    # 타임아웃 시에도 버퍼에 완성된 문장 있으면 처리
                     if text_buffer:
                         sentences = self._extract_complete_sentences(text_buffer)
                         if sentences:
@@ -200,15 +209,12 @@ class RealtimePipeline:
 
                 await self._send_status(ProcessingStage.NLP_ANALYZING)
                 
-                # 버퍼에 추가
                 text_buffer += " " + new_text
                 text_buffer = text_buffer.strip()
                 
-                # 완성된 문장 추출
                 sentences = self._extract_complete_sentences(text_buffer)
                 
                 for sentence, remaining in sentences:
-                    # 최종 STT 결과 전송
                     await self._send_stt_final(
                         STTFinalPayload(
                             text=sentence,
@@ -219,11 +225,8 @@ class RealtimePipeline:
                         )
                     )
                     
-                    # 추출 큐에 추가
                     await self._sentence_queue.put(sentence)
                     text_buffer = remaining
-                    
-                    logger.debug("sentence_complete", text=sentence[:50])
 
                 await self._send_status(ProcessingStage.IDLE)
 
@@ -236,11 +239,15 @@ class RealtimePipeline:
         logger.info("nlp_worker_stopped")
 
     def _extract_complete_sentences(self, text: str) -> list[tuple[str, str]]:
-        """완성된 문장 추출 (문장, 남은텍스트) 튜플 리스트 반환"""
+        """완성된 문장 추출 (다국어 지원)"""
         results = []
         
-        # 문장 종결 패턴
-        endings = ["다.", "요.", "니다.", "세요.", "까요?", "습니다.", "입니다.", "네요.", "죠.", "요?"]
+        # 다국어 문장 종결 패턴
+        endings = [
+            "다.", "요.", "니다.", "세요.", "까요?", "습니다.", "입니다.", "네요.", "죠.", "요?",
+            ". ", "! ", "? ",  # 영어
+            "。", "！", "？",  # 일본어/중국어
+        ]
         
         remaining = text
         for ending in endings:
@@ -249,32 +256,29 @@ class RealtimePipeline:
                 if idx != -1:
                     sentence = remaining[:idx + len(ending)].strip()
                     remaining = remaining[idx + len(ending):].strip()
-                    if len(sentence) > 10:  # 너무 짧은 문장 제외
+                    if len(sentence) > 5:
                         results.append((sentence, remaining))
         
-        # 마지막 remaining 업데이트
         if results:
             results[-1] = (results[-1][0], remaining)
         
         return results
 
     # ============================================
-    # Worker 3: Extraction (엔티티/관계 추출)
+    # Worker 3: Extraction (Vertex AI Gemini)
     # ============================================
     async def _extraction_worker(self) -> None:
-        """추출 워커 - 완성된 문장에서 엔티티/관계 추출"""
+        """추출 워커 - Vertex AI로 엔티티/관계 추출"""
         logger.info("extraction_worker_started")
         
         pipeline = await get_extraction_pipeline()
         graph_manager = await get_graph_manager()
         
-        # 배치 처리를 위한 버퍼
         sentence_buffer: list[str] = []
         last_extraction_time = time.time()
         
         while self._session.is_active:
             try:
-                # 문장 대기
                 try:
                     sentence = await asyncio.wait_for(
                         self._sentence_queue.get(), timeout=1.0
@@ -283,7 +287,6 @@ class RealtimePipeline:
                 except asyncio.TimeoutError:
                     pass
 
-                # 추출 조건: 3문장 이상 또는 5초 경과
                 should_extract = (
                     len(sentence_buffer) >= 3 or 
                     (sentence_buffer and time.time() - last_extraction_time > 5)
@@ -294,15 +297,12 @@ class RealtimePipeline:
 
                 await self._send_status(ProcessingStage.EXTRACTING)
                 
-                # 문장들을 하나의 텍스트로 결합
                 combined_text = " ".join(sentence_buffer)
                 sentence_buffer = []
                 last_extraction_time = time.time()
                 
-                # 현재 그래프 상태 조회
                 current_state = await graph_manager.get_state(self._session.session_id)
 
-                # 추출 실행
                 extraction_result = await pipeline.process_chunk(
                     text=combined_text,
                     morphemes=None,
@@ -310,7 +310,6 @@ class RealtimePipeline:
                     existing_relations=current_state.relations,
                 )
 
-                # 결과가 있으면 그래프 업데이트
                 if extraction_result.entities or extraction_result.relations:
                     await self._send_status(ProcessingStage.UPDATING_GRAPH)
                     
@@ -354,42 +353,20 @@ class RealtimePipeline:
             logger.error("send_message_error", error=str(e))
 
     async def _send_status(self, stage: ProcessingStage, chunk_id: str | None = None) -> None:
-        """처리 상태 전송"""
-        payload = ProcessingStatusPayload(
-            stage=stage,
-            chunkId=chunk_id,
-        )
-        await self._send_message(
-            WSMessageType.PROCESSING_STATUS, payload.model_dump(by_alias=True)
-        )
+        payload = ProcessingStatusPayload(stage=stage, chunkId=chunk_id)
+        await self._send_message(WSMessageType.PROCESSING_STATUS, payload.model_dump(by_alias=True))
 
     async def _send_stt_partial(self, result: STTPartialPayload) -> None:
-        """부분 STT 결과 전송"""
-        await self._send_message(
-            WSMessageType.STT_PARTIAL, result.model_dump(by_alias=True)
-        )
+        await self._send_message(WSMessageType.STT_PARTIAL, result.model_dump(by_alias=True))
 
     async def _send_stt_final(self, result: STTFinalPayload) -> None:
-        """최종 STT 결과 전송"""
-        await self._send_message(
-            WSMessageType.STT_FINAL, result.model_dump(by_alias=True)
-        )
+        await self._send_message(WSMessageType.STT_FINAL, result.model_dump(by_alias=True))
 
     async def _send_graph_delta(self, delta: GraphDelta) -> None:
-        """그래프 델타 전송"""
-        await self._send_message(
-            WSMessageType.GRAPH_DELTA, delta.model_dump(by_alias=True)
-        )
+        await self._send_message(WSMessageType.GRAPH_DELTA, delta.model_dump(by_alias=True))
 
-    async def _send_error(
-        self, code: ErrorCode, message: str, recoverable: bool = True
-    ) -> None:
-        """에러 전송"""
-        payload = ErrorPayload(
-            code=code,
-            message=message,
-            recoverable=recoverable,
-        )
+    async def _send_error(self, code: ErrorCode, message: str, recoverable: bool = True) -> None:
+        payload = ErrorPayload(code=code, message=message, recoverable=recoverable)
         await self._send_message(WSMessageType.ERROR, payload.model_dump())
 
 
@@ -410,24 +387,28 @@ class WebSocketHandler:
         with LogContext(session_id=session_id):
             logger.info("websocket_connected")
 
-            # 의존성 주입
-            stt = await get_stt()
             nlp = await get_nlp()
             graph_manager = await get_graph_manager()
 
-            # 파이프라인 생성
-            pipeline = RealtimePipeline(websocket, session, stt, nlp)
+            pipeline = RealtimePipeline(websocket, session, nlp)
 
             try:
+                # BigQuery에 세션 시작 이벤트 기록
+                settings = get_settings()
+                if settings.enable_feedback:
+                    try:
+                        bigquery = await get_bigquery_client()
+                        await bigquery.insert_session_event(
+                            session_id, "session_start", {"timestamp": time.time()}
+                        )
+                    except Exception as e:
+                        logger.warning("session_event_logging_failed", error=str(e))
+
                 # 초기 그래프 상태 전송
                 initial_state = await graph_manager.get_full_state_for_client(session_id)
-                await self._send_message(
-                    websocket,
-                    WSMessageType.GRAPH_FULL,
-                    initial_state,
-                )
+                await self._send_message(websocket, WSMessageType.GRAPH_FULL, initial_state)
 
-                # 파이프라인 시작 (3개 워커 병렬 실행)
+                # 파이프라인 시작
                 await pipeline.start()
 
                 # 메시지 수신 루프
@@ -467,15 +448,21 @@ class WebSocketHandler:
                 case WSMessageType.AUDIO_CHUNK:
                     chunk_payload = AudioChunkPayload(**payload)
                     session.audio_format = chunk_payload.format
-                    # 논블로킹으로 오디오 큐에 추가
                     asyncio.create_task(pipeline.process_audio_chunk(chunk_payload))
 
                 case WSMessageType.START_SESSION:
                     logger.info("session_started", session_id=session.session_id)
+                    # 언어 코드 설정 (있는 경우)
+                    if "config" in payload and payload["config"]:
+                        config = payload["config"]
+                        if "languageCodes" in config:
+                            session.language_codes = config["languageCodes"]
 
                 case WSMessageType.END_SESSION:
-                    session.is_active = False
-                    logger.info("session_ended", session_id=session.session_id)
+                    await self._handle_end_session(websocket, session)
+
+                case WSMessageType.SUBMIT_FEEDBACK:
+                    await self._handle_feedback(websocket, session, payload)
 
                 case WSMessageType.PING:
                     await self._send_message(websocket, WSMessageType.PONG, {})
@@ -485,8 +472,95 @@ class WebSocketHandler:
 
         except Exception as e:
             logger.error("message_handling_error", error=str(e))
-            await self._send_error(
-                websocket, ErrorCode.INTERNAL_ERROR, str(e)
+            await self._send_error(websocket, ErrorCode.INTERNAL_ERROR, str(e))
+
+    async def _handle_end_session(
+        self, websocket: WebSocket, session: SessionState
+    ) -> None:
+        """세션 종료 처리 - 피드백 요청"""
+        session.is_active = False
+        logger.info("session_ended", session_id=session.session_id)
+
+        settings = get_settings()
+        if settings.enable_feedback:
+            # 그래프 상태 조회
+            graph_manager = await get_graph_manager()
+            state = await graph_manager.get_state(session.session_id)
+
+            # 피드백 요청 전송
+            duration_seconds = int((time.time() - session.created_at))
+            request_payload = RequestFeedbackPayload(
+                sessionId=session.session_id,
+                entitiesCount=len(state.entities),
+                relationsCount=len(state.relations),
+                durationSeconds=duration_seconds,
+            )
+            await self._send_message(
+                websocket,
+                WSMessageType.REQUEST_FEEDBACK,
+                request_payload.model_dump(by_alias=True),
+            )
+
+    async def _handle_feedback(
+        self,
+        websocket: WebSocket,
+        session: SessionState,
+        payload: dict[str, Any],
+    ) -> None:
+        """피드백 제출 처리"""
+        try:
+            feedback = FeedbackPayload(**payload)
+            
+            # 그래프 상태 조회
+            graph_manager = await get_graph_manager()
+            state = await graph_manager.get_state(session.session_id)
+
+            # 피드백 매니저로 저장
+            feedback_manager = await get_feedback_manager()
+            
+            # 누적된 오디오 데이터 (있는 경우)
+            audio_data = None
+            if session.accumulated_audio:
+                audio_data = b"".join(session.accumulated_audio)
+
+            result_uris = await feedback_manager.submit_feedback(
+                session_id=session.session_id,
+                rating=feedback.rating,
+                comment=feedback.comment,
+                graph_state=state.model_dump(by_alias=True),
+                audio_data=audio_data,
+                audio_format=session.audio_format.codec if session.audio_format else "wav",
+            )
+
+            # 결과 전송
+            result_payload = FeedbackResultPayload(
+                success=True,
+                message="피드백이 저장되었습니다. 감사합니다!",
+                audioUri=result_uris.get("audio_uri"),
+                graphUri=result_uris.get("graph_uri"),
+            )
+            await self._send_message(
+                websocket,
+                WSMessageType.FEEDBACK_RESULT,
+                result_payload.model_dump(by_alias=True),
+            )
+
+            logger.info(
+                "feedback_submitted",
+                session_id=session.session_id,
+                rating=feedback.rating,
+            )
+
+        except Exception as e:
+            logger.error("feedback_submission_error", error=str(e))
+            result_payload = FeedbackResultPayload(
+                success=False,
+                message=f"피드백 저장 실패: {str(e)}",
+            )
+            await self._send_message(
+                websocket,
+                WSMessageType.FEEDBACK_RESULT,
+                result_payload.model_dump(by_alias=True),
             )
 
     async def _send_message(
@@ -505,11 +579,7 @@ class WebSocketHandler:
         self, websocket: WebSocket, code: ErrorCode, message: str
     ) -> None:
         """에러 전송"""
-        payload = ErrorPayload(
-            code=code,
-            message=message,
-            recoverable=True,
-        )
+        payload = ErrorPayload(code=code, message=message, recoverable=True)
         await self._send_message(websocket, WSMessageType.ERROR, payload.model_dump())
 
 

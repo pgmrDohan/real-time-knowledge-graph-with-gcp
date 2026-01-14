@@ -1,26 +1,24 @@
-# 개발 환경용 Docker Compose
-# Redis만 실행 (API는 로컬에서 개발 서버로)
+# 로컬 개발용 Docker Compose
+# Redis만 포함 (API 서버는 로컬에서 직접 실행)
 
 version: '3.8'
 
 services:
   redis:
     image: redis:7-alpine
-    container_name: rkg-redis-dev
+    container_name: rkg-redis
     ports:
       - "6379:6379"
     volumes:
-      - redis-dev-data:/data
-    command: redis-server --appendonly yes
+      - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf
+    command: redis-server /usr/local/etc/redis/redis.conf
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
-      interval: 5s
-      timeout: 3s
-      retries: 3
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
 
 volumes:
-  redis-dev-data:
-    driver: local
-
-
-
+  redis-data:

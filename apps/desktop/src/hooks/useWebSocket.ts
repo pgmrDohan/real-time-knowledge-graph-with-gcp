@@ -1,270 +1,280 @@
 /**
- * WebSocket 연결 및 메시지 처리 훅
+ * WebSocket 훅
+ * 실시간 서버 통신 관리
  */
 
 import { useCallback, useRef, useState, useEffect } from 'react';
 import { useGraphStore } from '../store/graphStore';
-import type {
-  WSMessage,
-  WSMessageType,
-  AudioChunkPayload,
-  GraphState,
-  GraphDelta,
-  STTPartialPayload,
-  STTFinalPayload,
-  ProcessingStatusPayload,
-  ProcessingStage,
-} from '@rkg/shared-types';
 
-const WS_URL = 'ws://localhost:8000/ws';
-const RECONNECT_DELAY = 3000;
-const MAX_RECONNECT_ATTEMPTS = 5;
+// 메시지 타입
+type WSMessageType =
+  | 'AUDIO_CHUNK'
+  | 'START_SESSION'
+  | 'END_SESSION'
+  | 'PING'
+  | 'SUBMIT_FEEDBACK'
+  | 'STT_PARTIAL'
+  | 'STT_FINAL'
+  | 'GRAPH_DELTA'
+  | 'GRAPH_FULL'
+  | 'PROCESSING_STATUS'
+  | 'ERROR'
+  | 'PONG'
+  | 'FEEDBACK_RESULT'
+  | 'REQUEST_FEEDBACK';
 
-interface UseWebSocketReturn {
-  isConnected: boolean;
-  connect: () => void;
-  disconnect: () => void;
-  sendAudioChunk: (data: ArrayBuffer, sequenceNumber: number) => void;
-  sendMessage: (type: WSMessageType, payload: Record<string, unknown>) => void;
+interface AudioFormat {
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  bitDepth?: number;
 }
 
-export function useWebSocket(): UseWebSocketReturn {
-  const [isConnected, setIsConnected] = useState(false);
-  const wsRef = useRef<WebSocket | null>(null);
-  const reconnectAttempts = useRef(0);
-  const reconnectTimeout = useRef<NodeJS.Timeout | null>(null);
+interface AudioChunkPayload {
+  data: string; // Base64
+  format: AudioFormat;
+  sequenceNumber: number;
+  startTime: number;
+  duration: number;
+}
 
-  // Store 액션
-  const setGraphState = useGraphStore((state) => state.setGraphState);
-  const applyDelta = useGraphStore((state) => state.applyDelta);
-  const setProcessingStage = useGraphStore((state) => state.setProcessingStage);
-  const addPartialSTT = useGraphStore((state) => state.addPartialSTT);
-  const addFinalSTT = useGraphStore((state) => state.addFinalSTT);
+interface WSMessage {
+  type: WSMessageType;
+  payload: Record<string, unknown>;
+  timestamp: number;
+  messageId: string;
+}
+
+export function useWebSocket() {
+  const wsRef = useRef<WebSocket | null>(null);
+  const [isConnected, setIsConnected] = useState(false);
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
+  const pingIntervalRef = useRef<NodeJS.Timeout>();
+  const sequenceRef = useRef(0);
+
+  const {
+    setGraphState,
+    applyDelta,
+    setProcessingStage,
+    addPartialSTT,
+    addFinalSTT,
+    setFeedbackRequest,
+  } = useGraphStore();
 
   // 메시지 핸들러
   const handleMessage = useCallback(
     (event: MessageEvent) => {
       try {
         const message: WSMessage = JSON.parse(event.data);
-        
+
         switch (message.type) {
           case 'GRAPH_FULL':
-            setGraphState(message.payload as GraphState);
+            setGraphState(message.payload as any);
             break;
 
           case 'GRAPH_DELTA':
-            applyDelta(message.payload as GraphDelta);
+            applyDelta(message.payload as any);
             break;
 
           case 'STT_PARTIAL':
-            addPartialSTT(message.payload as STTPartialPayload);
+            addPartialSTT(message.payload as any);
             break;
 
           case 'STT_FINAL':
-            addFinalSTT(message.payload as STTFinalPayload);
+            addFinalSTT(message.payload as any);
             break;
 
-          case 'PROCESSING_STATUS': {
-            const status = message.payload as ProcessingStatusPayload;
-            setProcessingStage(status.stage as ProcessingStage);
+          case 'PROCESSING_STATUS':
+            setProcessingStage((message.payload as any).stage);
             break;
-          }
+
+          case 'REQUEST_FEEDBACK':
+            // 피드백 요청 수신
+            setFeedbackRequest({
+              sessionId: (message.payload as any).sessionId,
+              entitiesCount: (message.payload as any).entitiesCount,
+              relationsCount: (message.payload as any).relationsCount,
+              durationSeconds: (message.payload as any).durationSeconds,
+            });
+            break;
+
+          case 'FEEDBACK_RESULT':
+            // 피드백 결과 처리
+            const result = message.payload as { success: boolean; message: string };
+            if (result.success) {
+              console.log('Feedback submitted successfully');
+            } else {
+              console.error('Feedback submission failed:', result.message);
+            }
+            break;
 
           case 'ERROR':
-            console.error('서버 에러:', message.payload);
+            console.error('WebSocket error:', message.payload);
             break;
 
           case 'PONG':
-            // Pong 응답 처리
+            // 연결 유지 확인
             break;
-
-          default:
-            console.log('알 수 없는 메시지:', message);
         }
       } catch (error) {
-        console.error('메시지 파싱 오류:', error);
+        console.error('Failed to parse WebSocket message:', error);
       }
     },
-    [setGraphState, applyDelta, setProcessingStage, addPartialSTT, addFinalSTT]
+    [setGraphState, applyDelta, addPartialSTT, addFinalSTT, setProcessingStage, setFeedbackRequest]
   );
 
   // 연결
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) {
-      return;
-    }
+    if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
-    try {
-      wsRef.current = new WebSocket(WS_URL);
+    // 개발/프로덕션 환경에 따른 URL 설정
+    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
 
-      wsRef.current.onopen = () => {
-        console.log('WebSocket 연결됨');
-        setIsConnected(true);
-        reconnectAttempts.current = 0;
+    const ws = new WebSocket(wsUrl);
 
-        // 세션 시작 메시지
-        wsRef.current?.send(
-          JSON.stringify({
-            type: 'START_SESSION',
-            payload: {
-              config: {
-                audioFormat: {
-                  codec: 'pcm',
-                  sampleRate: 48000,
-                  channels: 2,
-                  bitDepth: 16,
-                },
-                extractionMode: 'realtime',
-              },
-            },
-            timestamp: Date.now(),
-            messageId: crypto.randomUUID(),
-          })
-        );
-      };
+    ws.onopen = () => {
+      console.log('WebSocket connected');
+      setIsConnected(true);
 
-      wsRef.current.onmessage = handleMessage;
-
-      wsRef.current.onclose = (event) => {
-        console.log('WebSocket 연결 종료:', event.code);
-        setIsConnected(false);
-
-        // 자동 재연결
-        if (
-          event.code !== 1000 &&
-          reconnectAttempts.current < MAX_RECONNECT_ATTEMPTS
-        ) {
-          reconnectAttempts.current++;
-          console.log(
-            `재연결 시도 ${reconnectAttempts.current}/${MAX_RECONNECT_ATTEMPTS}...`
+      // Ping 인터벌 시작
+      pingIntervalRef.current = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(
+            JSON.stringify({
+              type: 'PING',
+              payload: {},
+              timestamp: Date.now(),
+              messageId: crypto.randomUUID(),
+            })
           );
-          
-          reconnectTimeout.current = setTimeout(connect, RECONNECT_DELAY);
         }
-      };
+      }, 30000);
+    };
 
-      wsRef.current.onerror = (error) => {
-        console.error('WebSocket 에러:', error);
-      };
-    } catch (error) {
-      console.error('WebSocket 연결 실패:', error);
-    }
+    ws.onmessage = handleMessage;
+
+    ws.onclose = () => {
+      console.log('WebSocket disconnected');
+      setIsConnected(false);
+
+      if (pingIntervalRef.current) {
+        clearInterval(pingIntervalRef.current);
+      }
+
+      // 자동 재연결
+      reconnectTimeoutRef.current = setTimeout(() => {
+        connect();
+      }, 3000);
+    };
+
+    ws.onerror = (error) => {
+      console.error('WebSocket error:', error);
+    };
+
+    wsRef.current = ws;
   }, [handleMessage]);
 
   // 연결 해제
   const disconnect = useCallback(() => {
-    if (reconnectTimeout.current) {
-      clearTimeout(reconnectTimeout.current);
+    if (reconnectTimeoutRef.current) {
+      clearTimeout(reconnectTimeoutRef.current);
     }
-
+    if (pingIntervalRef.current) {
+      clearInterval(pingIntervalRef.current);
+    }
     if (wsRef.current) {
-      // 세션 종료 메시지
-      if (wsRef.current.readyState === WebSocket.OPEN) {
-        wsRef.current.send(
-          JSON.stringify({
-            type: 'END_SESSION',
-            payload: {},
-            timestamp: Date.now(),
-            messageId: crypto.randomUUID(),
-          })
-        );
-      }
-
-      wsRef.current.close(1000, '정상 종료');
+      wsRef.current.close();
       wsRef.current = null;
     }
-
     setIsConnected(false);
+  }, []);
+
+  // 메시지 전송
+  const sendMessage = useCallback((type: WSMessageType, payload: Record<string, unknown>) => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) {
+      console.warn('WebSocket not connected');
+      return;
+    }
+
+    const message: WSMessage = {
+      type,
+      payload,
+      timestamp: Date.now(),
+      messageId: crypto.randomUUID(),
+    };
+
+    wsRef.current.send(JSON.stringify(message));
   }, []);
 
   // 오디오 청크 전송
   const sendAudioChunk = useCallback(
-    (data: ArrayBuffer, sequenceNumber: number) => {
-      if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return;
-      }
+    (audioData: ArrayBuffer, format: AudioFormat, duration: number) => {
+      if (wsRef.current?.readyState !== WebSocket.OPEN) return;
 
       // ArrayBuffer를 Base64로 변환
-      const base64Data = arrayBufferToBase64(data);
+      const base64 = btoa(
+        new Uint8Array(audioData).reduce(
+          (data, byte) => data + String.fromCharCode(byte),
+          ''
+        )
+      );
 
       const payload: AudioChunkPayload = {
-        data: base64Data,
+        data: base64,
         format: {
-          codec: 'webm',
-          sampleRate: 48000,
-          channels: 2,
+          codec: format.codec,
+          sampleRate: format.sampleRate,
+          channels: format.channels,
+          bitDepth: format.bitDepth,
         },
-        sequenceNumber,
+        sequenceNumber: sequenceRef.current++,
         startTime: Date.now(),
-        duration: 5000, // MediaRecorder는 5초마다 전송
+        duration,
       };
 
-      wsRef.current.send(
-        JSON.stringify({
-          type: 'AUDIO_CHUNK',
-          payload,
-          timestamp: Date.now(),
-          messageId: crypto.randomUUID(),
-        })
-      );
+      sendMessage('AUDIO_CHUNK', payload as unknown as Record<string, unknown>);
     },
-    []
+    [sendMessage]
   );
 
-  // 일반 메시지 전송
-  const sendMessage = useCallback(
-    (type: WSMessageType, payload: Record<string, unknown>) => {
-      if (wsRef.current?.readyState !== WebSocket.OPEN) {
-        return;
-      }
-
-      wsRef.current.send(
-        JSON.stringify({
-          type,
-          payload,
-          timestamp: Date.now(),
-          messageId: crypto.randomUUID(),
-        })
-      );
+  // 세션 시작
+  const startSession = useCallback(
+    (languageCodes?: string[]) => {
+      sequenceRef.current = 0;
+      sendMessage('START_SESSION', {
+        config: languageCodes ? { languageCodes } : null,
+      });
     },
-    []
+    [sendMessage]
   );
 
-  // 컴포넌트 언마운트 시 정리
+  // 세션 종료
+  const endSession = useCallback(() => {
+    sendMessage('END_SESSION', {});
+  }, [sendMessage]);
+
+  // 피드백 제출
+  const submitFeedback = useCallback(
+    (rating: number, comment: string | null) => {
+      sendMessage('SUBMIT_FEEDBACK', { rating, comment });
+    },
+    [sendMessage]
+  );
+
+  // 정리
   useEffect(() => {
     return () => {
       disconnect();
     };
   }, [disconnect]);
 
-  // Ping 전송 (연결 유지)
-  useEffect(() => {
-    if (!isConnected) return;
-
-    const pingInterval = setInterval(() => {
-      sendMessage('PING', {});
-    }, 30000);
-
-    return () => clearInterval(pingInterval);
-  }, [isConnected, sendMessage]);
-
   return {
-    isConnected,
     connect,
     disconnect,
+    isConnected,
     sendAudioChunk,
-    sendMessage,
+    startSession,
+    endSession,
+    submitFeedback,
   };
 }
-
-// ArrayBuffer를 Base64로 변환
-function arrayBufferToBase64(buffer: ArrayBuffer): string {
-  const bytes = new Uint8Array(buffer);
-  let binary = '';
-  for (let i = 0; i < bytes.byteLength; i++) {
-    binary += String.fromCharCode(bytes[i]);
-  }
-  return btoa(binary);
-}
-
-

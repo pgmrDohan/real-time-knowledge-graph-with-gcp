@@ -5,14 +5,30 @@ import { ControlPanel } from './components/ControlPanel';
 import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { StatusBar } from './components/StatusBar';
+import { FeedbackDialog } from './components/FeedbackDialog';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioCapture } from './hooks/useAudioCapture';
 import { useGraphStore } from './store/graphStore';
 
 export function App() {
-  const { connect, disconnect, isConnected, sendAudioChunk } = useWebSocket();
-  const { isCapturing, startCapture, stopCapture, error: captureError } = useAudioCapture(sendAudioChunk);
+  const {
+    connect,
+    disconnect,
+    isConnected,
+    sendAudioChunk,
+    startSession,
+    endSession,
+    submitFeedback,
+  } = useWebSocket();
+  const { isCapturing, startCapture, stopCapture, error: captureError } =
+    useAudioCapture(sendAudioChunk);
   const processingStage = useGraphStore((state) => state.processingStage);
+  const showFeedbackDialog = useGraphStore((state) => state.showFeedbackDialog);
+  const feedbackRequest = useGraphStore((state) => state.feedbackRequest);
+  const setShowFeedbackDialog = useGraphStore(
+    (state) => state.setShowFeedbackDialog
+  );
+  const setFeedbackRequest = useGraphStore((state) => state.setFeedbackRequest);
 
   // 컴포넌트 마운트 시 WebSocket 연결
   useEffect(() => {
@@ -25,9 +41,24 @@ export function App() {
   const handleToggleCapture = async () => {
     if (isCapturing) {
       stopCapture();
+      // 세션 종료 메시지 전송 (피드백 요청 트리거)
+      endSession();
     } else {
       await startCapture();
+      // 세션 시작 메시지 전송
+      startSession();
     }
+  };
+
+  const handleFeedbackSubmit = (rating: number, comment: string | null) => {
+    submitFeedback(rating, comment);
+    setShowFeedbackDialog(false);
+    setFeedbackRequest(null);
+  };
+
+  const handleFeedbackClose = () => {
+    setShowFeedbackDialog(false);
+    setFeedbackRequest(null);
   };
 
   return (
@@ -61,8 +92,14 @@ export function App() {
         isCapturing={isCapturing}
         processingStage={processingStage}
       />
+
+      {/* 피드백 다이얼로그 */}
+      <FeedbackDialog
+        isOpen={showFeedbackDialog}
+        onClose={handleFeedbackClose}
+        onSubmit={handleFeedbackSubmit}
+        sessionInfo={feedbackRequest}
+      />
     </div>
   );
 }
-
-

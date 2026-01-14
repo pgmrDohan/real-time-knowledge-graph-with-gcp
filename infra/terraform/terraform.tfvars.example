@@ -1,0 +1,7 @@
+# Terraform 변수 예시 파일
+# 이 파일을 terraform.tfvars로 복사하고 값을 설정하세요
+
+project_id  = "your-gcp-project-id"
+region      = "asia-northeast3"
+environment = "dev"
+

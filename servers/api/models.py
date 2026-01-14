@@ -38,6 +38,8 @@ class WSMessageType(str, Enum):
     START_SESSION = "START_SESSION"
     END_SESSION = "END_SESSION"
     PING = "PING"
+    SUBMIT_FEEDBACK = "SUBMIT_FEEDBACK"  # 피드백 제출
+    
     # 서버 → 클라이언트
     STT_PARTIAL = "STT_PARTIAL"
     STT_FINAL = "STT_FINAL"
@@ -46,6 +48,8 @@ class WSMessageType(str, Enum):
     PROCESSING_STATUS = "PROCESSING_STATUS"
     ERROR = "ERROR"
     PONG = "PONG"
+    FEEDBACK_RESULT = "FEEDBACK_RESULT"  # 피드백 결과
+    REQUEST_FEEDBACK = "REQUEST_FEEDBACK"  # 피드백 요청
 
 
 class ProcessingStage(str, Enum):
@@ -56,6 +60,7 @@ class ProcessingStage(str, Enum):
     NLP_ANALYZING = "NLP_ANALYZING"
     EXTRACTING = "EXTRACTING"
     UPDATING_GRAPH = "UPDATING_GRAPH"
+    SAVING_DATA = "SAVING_DATA"
     IDLE = "IDLE"
 
 
@@ -68,6 +73,8 @@ class ErrorCode(str, Enum):
     GRAPH_UPDATE_FAILED = "GRAPH_UPDATE_FAILED"
     RATE_LIMITED = "RATE_LIMITED"
     SESSION_EXPIRED = "SESSION_EXPIRED"
+    FEEDBACK_FAILED = "FEEDBACK_FAILED"
+    STORAGE_ERROR = "STORAGE_ERROR"
     INTERNAL_ERROR = "INTERNAL_ERROR"
 
 
@@ -248,6 +255,9 @@ class SessionConfig(BaseModel):
     initial_graph_state: GraphState | None = Field(
         default=None, alias="initialGraphState"
     )
+    language_codes: list[str] | None = Field(
+        default=None, alias="languageCodes"
+    )
 
     model_config = {"populate_by_name": True}
 
@@ -256,6 +266,40 @@ class StartSessionPayload(BaseModel):
     """세션 시작 페이로드"""
 
     config: SessionConfig | None = None
+
+
+# ============================================
+# 피드백
+# ============================================
+
+
+class FeedbackPayload(BaseModel):
+    """피드백 제출 페이로드"""
+
+    rating: int = Field(ge=1, le=5, description="만족도 (1-5)")
+    comment: str | None = Field(default=None, description="사용자 코멘트")
+
+
+class FeedbackResultPayload(BaseModel):
+    """피드백 결과 페이로드"""
+
+    success: bool
+    message: str
+    audio_uri: str | None = Field(default=None, alias="audioUri")
+    graph_uri: str | None = Field(default=None, alias="graphUri")
+
+    model_config = {"populate_by_name": True}
+
+
+class RequestFeedbackPayload(BaseModel):
+    """피드백 요청 페이로드"""
+
+    session_id: str = Field(alias="sessionId")
+    entities_count: int = Field(alias="entitiesCount")
+    relations_count: int = Field(alias="relationsCount")
+    duration_seconds: int = Field(alias="durationSeconds")
+
+    model_config = {"populate_by_name": True}
 
 
 # ============================================
@@ -286,6 +330,3 @@ class WSMessage(BaseModel):
     message_id: str = Field(alias="messageId")
 
     model_config = {"populate_by_name": True}
-
-
-
