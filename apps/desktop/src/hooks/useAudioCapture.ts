@@ -5,6 +5,13 @@
 
 import { useCallback, useRef, useState } from 'react';
 
+interface AudioFormat {
+  codec: string;
+  sampleRate: number;
+  channels: number;
+  bitDepth?: number;
+}
+
 interface UseAudioCaptureReturn {
   isCapturing: boolean;
   startCapture: () => Promise<void>;
@@ -15,7 +22,7 @@ interface UseAudioCaptureReturn {
 const CHUNK_DURATION_MS = 5000; // 5초마다 새 청크
 
 export function useAudioCapture(
-  onAudioChunk: (data: ArrayBuffer, sequenceNumber: number) => void
+  onAudioChunk: (data: ArrayBuffer, format: AudioFormat, duration: number) => void
 ): UseAudioCaptureReturn {
   const [isCapturing, setIsCapturing] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -42,6 +49,7 @@ export function useAudioCapture(
     });
 
     const chunks: Blob[] = [];
+    const startTime = Date.now();
 
     recorder.ondataavailable = (event) => {
       if (event.data.size > 0) {
@@ -56,7 +64,22 @@ export function useAudioCapture(
         const buffer = await blob.arrayBuffer();
         
         if (buffer.byteLength > 0) {
-          onAudioChunk(buffer, sequenceRef.current++);
+          // 오디오 트랙 정보 가져오기
+          const audioTrack = audioStream.getAudioTracks()[0];
+          const settings = audioTrack.getSettings();
+          
+          // 오디오 포맷 정보 구성
+          const format: AudioFormat = {
+            codec: mimeType.includes('opus') ? 'opus' : 'webm',
+            sampleRate: settings.sampleRate || 48000,
+            channels: settings.channelCount || 2,
+          };
+          
+          // 실제 녹음 시간 계산
+          const duration = Date.now() - startTime;
+          
+          onAudioChunk(buffer, format, duration);
+          sequenceRef.current++;
         }
       }
     };
