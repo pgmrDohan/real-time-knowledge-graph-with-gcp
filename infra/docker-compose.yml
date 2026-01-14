@@ -1,0 +1,57 @@
+version: '3.8'
+
+services:
+  # Redis - 동기화 및 버퍼링
+  redis:
+    image: redis:7-alpine
+    container_name: rkg-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+      - ./redis.conf:/usr/local/etc/redis/redis.conf:ro
+    command: redis-server /usr/local/etc/redis/redis.conf
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    networks:
+      - rkg-network
+
+  # FastAPI 서버
+  api:
+    build:
+      context: ../servers/api
+      dockerfile: Dockerfile
+    container_name: rkg-api
+    ports:
+      - "8000:8000"
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+      - GEMINI_API_KEY=${GEMINI_API_KEY}
+      - LOG_LEVEL=INFO
+      - LOG_FORMAT=json
+    depends_on:
+      redis:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - rkg-network
+
+volumes:
+  redis-data:
+    driver: local
+
+networks:
+  rkg-network:
+    driver: bridge
+
+
+

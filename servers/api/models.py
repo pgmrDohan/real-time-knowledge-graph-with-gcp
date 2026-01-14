@@ -1,0 +1,291 @@
+"""
+Pydantic 모델 정의
+TypeScript 공유 타입과 동기화된 Python 모델
+"""
+
+from enum import Enum
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+
+# ============================================
+# 열거형
+# ============================================
+
+
+class EntityType(str, Enum):
+    """엔티티 유형"""
+
+    PERSON = "PERSON"
+    ORGANIZATION = "ORGANIZATION"
+    LOCATION = "LOCATION"
+    CONCEPT = "CONCEPT"
+    EVENT = "EVENT"
+    PRODUCT = "PRODUCT"
+    TECHNOLOGY = "TECHNOLOGY"
+    DATE = "DATE"
+    METRIC = "METRIC"
+    ACTION = "ACTION"
+    UNKNOWN = "UNKNOWN"
+
+
+class WSMessageType(str, Enum):
+    """WebSocket 메시지 유형"""
+
+    # 클라이언트 → 서버
+    AUDIO_CHUNK = "AUDIO_CHUNK"
+    START_SESSION = "START_SESSION"
+    END_SESSION = "END_SESSION"
+    PING = "PING"
+    # 서버 → 클라이언트
+    STT_PARTIAL = "STT_PARTIAL"
+    STT_FINAL = "STT_FINAL"
+    GRAPH_DELTA = "GRAPH_DELTA"
+    GRAPH_FULL = "GRAPH_FULL"
+    PROCESSING_STATUS = "PROCESSING_STATUS"
+    ERROR = "ERROR"
+    PONG = "PONG"
+
+
+class ProcessingStage(str, Enum):
+    """처리 파이프라인 단계"""
+
+    RECEIVING = "RECEIVING"
+    STT_PROCESSING = "STT_PROCESSING"
+    NLP_ANALYZING = "NLP_ANALYZING"
+    EXTRACTING = "EXTRACTING"
+    UPDATING_GRAPH = "UPDATING_GRAPH"
+    IDLE = "IDLE"
+
+
+class ErrorCode(str, Enum):
+    """에러 코드"""
+
+    AUDIO_FORMAT_UNSUPPORTED = "AUDIO_FORMAT_UNSUPPORTED"
+    STT_FAILED = "STT_FAILED"
+    EXTRACTION_FAILED = "EXTRACTION_FAILED"
+    GRAPH_UPDATE_FAILED = "GRAPH_UPDATE_FAILED"
+    RATE_LIMITED = "RATE_LIMITED"
+    SESSION_EXPIRED = "SESSION_EXPIRED"
+    INTERNAL_ERROR = "INTERNAL_ERROR"
+
+
+# ============================================
+# 그래프 엔티티/관계
+# ============================================
+
+
+class GraphEntity(BaseModel):
+    """그래프 노드 엔티티"""
+
+    id: str
+    label: str
+    type: EntityType
+    created_at: int = Field(alias="createdAt")
+    updated_at: int = Field(alias="updatedAt")
+    metadata: dict[str, Any] | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+class GraphRelation(BaseModel):
+    """엔티티 간 관계"""
+
+    id: str
+    source: str
+    target: str
+    relation: str
+    weight: float | None = None
+    created_at: int = Field(alias="createdAt")
+
+    model_config = {"populate_by_name": True}
+
+
+class GraphState(BaseModel):
+    """전체 그래프 상태"""
+
+    version: int
+    entities: list[GraphEntity]
+    relations: list[GraphRelation]
+    last_updated: int = Field(alias="lastUpdated")
+
+    model_config = {"populate_by_name": True}
+
+
+class GraphDelta(BaseModel):
+    """그래프 업데이트 델타"""
+
+    added_entities: list[GraphEntity] = Field(alias="addedEntities")
+    added_relations: list[GraphRelation] = Field(alias="addedRelations")
+    updated_entities: list[GraphEntity] = Field(alias="updatedEntities")
+    removed_entity_ids: list[str] = Field(alias="removedEntityIds")
+    removed_relation_ids: list[str] = Field(alias="removedRelationIds")
+    from_version: int = Field(alias="fromVersion")
+    to_version: int = Field(alias="toVersion")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================
+# LLM 추출 결과
+# ============================================
+
+
+class ExtractedEntity(BaseModel):
+    """추출된 엔티티 (정규화 전)"""
+
+    id: str
+    label: str
+    type: EntityType
+
+
+class ExtractedRelation(BaseModel):
+    """추출된 관계 (정규화 전)"""
+
+    source: str
+    target: str
+    relation: str
+
+
+class ExtractionResult(BaseModel):
+    """LLM 추출 결과"""
+
+    entities: list[ExtractedEntity]
+    relations: list[ExtractedRelation]
+
+
+# ============================================
+# 오디오 관련
+# ============================================
+
+
+class AudioFormat(BaseModel):
+    """오디오 포맷 정보"""
+
+    codec: str  # pcm, wav, webm, opus
+    sample_rate: int = Field(alias="sampleRate")
+    channels: int
+    bit_depth: int | None = Field(default=None, alias="bitDepth")
+
+    model_config = {"populate_by_name": True}
+
+
+class AudioChunkPayload(BaseModel):
+    """오디오 청크 페이로드"""
+
+    data: str  # Base64 인코딩
+    format: AudioFormat
+    sequence_number: int = Field(alias="sequenceNumber")
+    start_time: int = Field(alias="startTime")
+    duration: int
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================
+# STT 결과
+# ============================================
+
+
+class KiwiMorpheme(BaseModel):
+    """Kiwi 형태소 분석 결과"""
+
+    form: str
+    tag: str
+    start: int
+    end: int
+
+
+class STTPartialPayload(BaseModel):
+    """STT 부분 결과"""
+
+    text: str
+    confidence: float
+    segment_id: str = Field(alias="segmentId")
+
+    model_config = {"populate_by_name": True}
+
+
+class STTFinalPayload(BaseModel):
+    """STT 최종 결과"""
+
+    text: str
+    confidence: float
+    segment_id: str = Field(alias="segmentId")
+    morphemes: list[KiwiMorpheme] | None = None
+    is_complete: bool = Field(alias="isComplete")
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================
+# 처리 상태
+# ============================================
+
+
+class ProcessingStatusPayload(BaseModel):
+    """처리 상태 페이로드"""
+
+    stage: ProcessingStage
+    chunk_id: str | None = Field(default=None, alias="chunkId")
+    progress: int | None = None
+    message: str | None = None
+
+    model_config = {"populate_by_name": True}
+
+
+# ============================================
+# 세션
+# ============================================
+
+
+class SessionConfig(BaseModel):
+    """세션 설정"""
+
+    audio_format: AudioFormat = Field(alias="audioFormat")
+    extraction_mode: str = Field(default="realtime", alias="extractionMode")
+    initial_graph_state: GraphState | None = Field(
+        default=None, alias="initialGraphState"
+    )
+
+    model_config = {"populate_by_name": True}
+
+
+class StartSessionPayload(BaseModel):
+    """세션 시작 페이로드"""
+
+    config: SessionConfig | None = None
+
+
+# ============================================
+# 에러
+# ============================================
+
+
+class ErrorPayload(BaseModel):
+    """에러 페이로드"""
+
+    code: ErrorCode
+    message: str
+    recoverable: bool
+    details: dict[str, Any] | None = None
+
+
+# ============================================
+# WebSocket 메시지
+# ============================================
+
+
+class WSMessage(BaseModel):
+    """WebSocket 메시지 기본 구조"""
+
+    type: WSMessageType
+    payload: dict[str, Any]
+    timestamp: int
+    message_id: str = Field(alias="messageId")
+
+    model_config = {"populate_by_name": True}
+
+
+

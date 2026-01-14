@@ -1,0 +1,33 @@
+# FastAPI & Server
+fastapi
+uvicorn[standard]
+websockets
+python-multipart
+
+# LLM & AI
+langchain
+langchain-google-genai
+langchain-community
+google-genai
+
+# NLP (Korean)
+kiwipiepy
+
+# Redis
+redis
+
+# Data Validation
+pydantic
+pydantic-settings
+
+# Utilities
+python-dotenv
+structlog
+orjson
+
+# Development
+black
+ruff
+mypy
+pytest
+pytest-asyncio
