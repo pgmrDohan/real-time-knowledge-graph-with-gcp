@@ -32,12 +32,31 @@ class RedisManager:
     async def connect(self) -> None:
         """Redis 연결"""
         settings = get_settings()
-        self._client = await redis.from_url(
-            settings.redis_url,
-            encoding="utf-8",
-            decode_responses=True,
-        )
-        logger.info("redis_connected", url=settings.redis_url)
+        
+        # 타임아웃 및 재시도 설정으로 연결 안정성 향상
+        try:
+            self._client = await asyncio.wait_for(
+                redis.from_url(
+                    settings.redis_url,
+                    encoding="utf-8",
+                    decode_responses=True,
+                    socket_connect_timeout=10.0,  # 연결 타임아웃 (10초)
+                    socket_timeout=10.0,  # 소켓 타임아웃 (10초)
+                    retry_on_timeout=True,  # 타임아웃 시 재시도
+                    health_check_interval=30,  # 헬스 체크 간격 (30초)
+                ),
+                timeout=15.0  # 전체 연결 타임아웃 (15초)
+            )
+            
+            # 연결 확인
+            await self._client.ping()
+            logger.info("redis_connected", url=settings.redis_url)
+        except asyncio.TimeoutError:
+            logger.error("redis_connection_timeout", url=settings.redis_url)
+            raise ConnectionError("Redis connection timeout") from None
+        except Exception as e:
+            logger.error("redis_connection_failed", url=settings.redis_url, error=str(e))
+            raise
 
     async def disconnect(self) -> None:
         """Redis 연결 해제"""
