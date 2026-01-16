@@ -383,8 +383,13 @@ resource "google_compute_firewall" "allow_internal" {
     ports    = ["6378"]  # Redis
   }
 
-  source_ranges = ["10.0.0.0/8"]
-  target_tags   = ["knowledge-graph"]
+  # VPC 커넥터 IP 범위와 전체 내부 네트워크 허용
+  # Cloud Run은 태그를 사용하지 않으므로 target_tags 제거
+  source_ranges = [
+    "10.0.0.0/8",      # 전체 내부 네트워크
+    "10.8.0.0/28",     # VPC 커넥터 IP 범위
+  ]
+  # target_tags 제거 - Cloud Run은 태그를 사용하지 않음
 }
 
 resource "google_compute_firewall" "deny_all_egress" {
@@ -415,7 +420,7 @@ resource "google_compute_firewall" "allow_google_apis" {
   }
 
   destination_ranges = ["199.36.153.8/30"]  # Private Google Access
-  target_tags        = ["knowledge-graph"]
+  # target_tags 제거 - Cloud Run은 태그를 사용하지 않음
 }
 
 # ==============================================
