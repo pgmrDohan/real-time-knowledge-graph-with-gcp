@@ -8,7 +8,8 @@ import path from 'path';
 
 let mainWindow: BrowserWindow | null = null;
 
-const isDev = process.env.NODE_ENV !== 'production';
+// electron-builder로 패키징하면 app.isPackaged가 true
+const isDev = !app.isPackaged;
 
 async function createWindow(): Promise<void> {
   mainWindow = new BrowserWindow({
