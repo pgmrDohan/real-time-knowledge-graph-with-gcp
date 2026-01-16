@@ -28,43 +28,97 @@ class RedisManager:
     def __init__(self) -> None:
         self._client: Redis | None = None
         self._pubsub: redis.client.PubSub | None = None
+        self._connection_task: asyncio.Task | None = None
+        self._should_reconnect = False
+        self._connection_task: asyncio.Task | None = None
 
-    async def connect(self) -> None:
-        """Redis 연결"""
+    async def connect(self, retry: bool = True) -> None:
+        """Redis 연결 (재시도 로직 포함)"""
         settings = get_settings()
         
-        # 타임아웃 및 재시도 설정으로 연결 안정성 향상
-        try:
-            self._client = await asyncio.wait_for(
-                redis.from_url(
-                    settings.redis_url,
-                    encoding="utf-8",
-                    decode_responses=True,
-                    socket_connect_timeout=10.0,  # 연결 타임아웃 (10초)
-                    socket_timeout=10.0,  # 소켓 타임아웃 (10초)
-                    retry_on_timeout=True,  # 타임아웃 시 재시도
-                    health_check_interval=30,  # 헬스 체크 간격 (30초)
-                ),
-                timeout=15.0  # 전체 연결 타임아웃 (15초)
-            )
-            
-            # 연결 확인
-            await self._client.ping()
-            logger.info("redis_connected", url=settings.redis_url)
-        except asyncio.TimeoutError:
-            logger.error("redis_connection_timeout", url=settings.redis_url)
-            raise ConnectionError("Redis connection timeout") from None
-        except Exception as e:
-            logger.error("redis_connection_failed", url=settings.redis_url, error=str(e))
-            raise
+        max_retries = 10 if retry else 1
+        retry_delay = 2.0  # 초기 재시도 지연 (2초)
+        
+        for attempt in range(max_retries):
+            try:
+                # 연결 풀 설정으로 안정적인 연결 관리
+                self._client = await asyncio.wait_for(
+                    redis.from_url(
+                        settings.redis_url,
+                        encoding="utf-8",
+                        decode_responses=True,
+                        socket_connect_timeout=5.0,  # 연결 타임아웃 (5초)
+                        socket_timeout=5.0,  # 소켓 타임아웃 (5초)
+                        retry_on_timeout=True,  # 타임아웃 시 재시도
+                        health_check_interval=30,  # 헬스 체크 간격 (30초)
+                        max_connections=50,  # 최대 연결 수
+                        retry_on_error=[ConnectionError, TimeoutError],  # 재시도할 에러
+                    ),
+                    timeout=10.0  # 전체 연결 타임아웃 (10초)
+                )
+                
+                # 연결 확인
+                await self._client.ping()
+                logger.info("redis_connected", url=settings.redis_url, attempt=attempt + 1)
+                
+                # 백그라운드 재연결 태스크 시작
+                if retry and not self._connection_task:
+                    self._should_reconnect = True
+                    self._connection_task = asyncio.create_task(self._background_reconnect())
+                
+                return  # 연결 성공
+                
+            except (asyncio.TimeoutError, ConnectionError, TimeoutError) as e:
+                if attempt < max_retries - 1:
+                    wait_time = retry_delay * (2 ** attempt)  # 지수 백오프
+                    logger.warning(
+                        "redis_connection_retry",
+                        url=settings.redis_url,
+                        attempt=attempt + 1,
+                        max_retries=max_retries,
+                        wait_time=wait_time,
+                        error=str(e)
+                    )
+                    await asyncio.sleep(wait_time)
+                else:
+                    logger.warning(
+                        "redis_connection_failed_after_retries",
+                        url=settings.redis_url,
+                        attempts=max_retries,
+                        error=str(e)
+                    )
+                    # 최종 실패해도 예외 발생하지 않음 - 애플리케이션은 계속 실행
+            except Exception as e:
+                logger.warning(
+                    "redis_connection_failed_continuing",
+                    url=settings.redis_url,
+                    error=str(e)
+                )
+                # 예외 발생하지 않음 - 애플리케이션은 계속 실행
+                return
 
     async def disconnect(self) -> None:
         """Redis 연결 해제"""
+        self._should_reconnect = False
+        if self._connection_task:
+            self._connection_task.cancel()
+            try:
+                await self._connection_task
+            except asyncio.CancelledError:
+                pass
         if self._pubsub:
             await self._pubsub.close()
         if self._client:
             await self._client.close()
         logger.info("redis_disconnected")
+    
+    async def _background_reconnect(self) -> None:
+        """백그라운드에서 Redis 연결 재시도"""
+        while self._should_reconnect:
+            if not self._client or not await self._is_connected():
+                logger.info("redis_background_reconnect_attempt")
+                await self.connect(retry=False)  # 백그라운드에서는 1회만 시도
+            await asyncio.sleep(10)  # 10초마다 확인
 
     @property
     def client(self) -> Redis:
@@ -233,16 +287,30 @@ class RedisManager:
             await self.client.delete(*keys)
         logger.info("session_cleared", session_id=session_id, keys_deleted=len(keys))
 
-    async def health_check(self) -> bool:
-        """Redis 연결 상태 확인"""
+    async def _is_connected(self) -> bool:
+        """Redis 연결 상태 확인 (내부용)"""
         if not self._client:
-            logger.warning("redis_not_connected_for_health_check")
             return False
         try:
             await self._client.ping()
             return True
+        except Exception:
+            return False
+    
+    async def health_check(self) -> bool:
+        """Redis 연결 상태 확인"""
+        if not self._client:
+            # 연결이 없으면 재시도
+            if self._should_reconnect:
+                await self.connect(retry=False)
+            return await self._is_connected()
+        try:
+            return await self._is_connected()
         except Exception as e:
             logger.error("redis_health_check_failed", error=str(e))
+            # 연결이 끊어진 경우 재시도
+            if self._should_reconnect:
+                await self.connect(retry=False)
             return False
 
 

@@ -33,55 +33,86 @@ logger = get_logger(__name__)
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncGenerator[None, None]:
     """애플리케이션 라이프사이클 관리"""
+    import os
+    
+    # Cloud Run은 PORT 환경 변수를 자동 설정
+    port = int(os.environ.get("PORT", "8000"))
     settings = get_settings()
     logger.info(
         "application_starting",
         host=settings.host,
-        port=settings.port,
+        port=port,
         gcp_project=settings.gcp_project_id,
         region=settings.gcp_region,
     )
 
+    # Redis 연결 (실패해도 애플리케이션은 시작)
     try:
-        # Redis 연결
         await redis_manager.connect()
-
-        # GCP 서비스 초기화
-        logger.info("initializing_gcp_services")
-
-        # Cloud Speech-to-Text v2
-        await get_speech_client()
-        logger.info("cloud_speech_initialized")
-
-        # Vertex AI
-        await get_vertex_client()
-        logger.info("vertex_ai_initialized")
-
-        # Cloud Storage (선택적)
-        if settings.gcs_bucket_name:
-            await get_storage_client()
-            logger.info("cloud_storage_initialized")
-
-        # BigQuery (선택적)
-        if settings.enable_feedback:
-            await get_bigquery_client()
-            logger.info("bigquery_initialized")
-
-        # NLP 초기화
-        await get_nlp()
-        logger.info("nlp_initialized")
-
-        logger.info("application_initialized")
-
+        logger.info("redis_connection_initiated")
     except Exception as e:
-        logger.error("initialization_failed", error=str(e))
-        raise
+        logger.warning("redis_connection_failed_continuing", error=str(e))
+        # Redis 연결 실패해도 애플리케이션은 시작
 
+    # GCP 서비스 초기화 (비동기로 처리하여 애플리케이션 시작을 블로킹하지 않음)
+    async def initialize_services():
+        try:
+            logger.info("initializing_gcp_services")
+
+            # Cloud Speech-to-Text v2
+            try:
+                await get_speech_client()
+                logger.info("cloud_speech_initialized")
+            except Exception as e:
+                logger.warning("cloud_speech_init_failed", error=str(e))
+
+            # Vertex AI
+            try:
+                await get_vertex_client()
+                logger.info("vertex_ai_initialized")
+            except Exception as e:
+                logger.warning("vertex_ai_init_failed", error=str(e))
+
+            # Cloud Storage (선택적)
+            if settings.gcs_bucket_name:
+                try:
+                    await get_storage_client()
+                    logger.info("cloud_storage_initialized")
+                except Exception as e:
+                    logger.warning("cloud_storage_init_failed", error=str(e))
+
+            # BigQuery (선택적)
+            if settings.enable_feedback:
+                try:
+                    await get_bigquery_client()
+                    logger.info("bigquery_initialized")
+                except Exception as e:
+                    logger.warning("bigquery_init_failed", error=str(e))
+
+            # NLP 초기화
+            try:
+                await get_nlp()
+                logger.info("nlp_initialized")
+            except Exception as e:
+                logger.warning("nlp_init_failed", error=str(e))
+
+            logger.info("service_initialization_completed")
+        except Exception as e:
+            logger.error("service_initialization_error", error=str(e))
+            # 서비스 초기화 실패해도 애플리케이션은 계속 실행
+
+    # 서비스 초기화를 백그라운드에서 실행 (애플리케이션 시작을 블로킹하지 않음)
+    asyncio.create_task(initialize_services())
+
+    logger.info("application_ready")
     yield
 
     # 종료 시 정리
     logger.info("application_shutting_down")
-    await redis_manager.disconnect()
+    try:
+        await redis_manager.disconnect()
+    except Exception:
+        pass  # 이미 연결이 끊어진 경우 무시
     logger.info("application_stopped")
 
 
@@ -187,13 +218,16 @@ async def websocket_endpoint(websocket: WebSocket) -> None:
 # ============================================
 
 if __name__ == "__main__":
+    import os
     import uvicorn
 
     settings = get_settings()
+    # Cloud Run은 PORT 환경 변수를 자동 설정
+    port = int(os.environ.get("PORT", settings.port))
     uvicorn.run(
         "main:app",
         host=settings.host,
-        port=settings.port,
+        port=port,
         reload=settings.debug,
         log_level=settings.log_level.lower(),
     )
