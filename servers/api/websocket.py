@@ -57,6 +57,9 @@ class SessionState:
         # 세션 데이터 (피드백용)
         self.accumulated_audio: list[bytes] = []
         self.total_audio_duration_ms = 0
+        
+        # 연결 종료 시 Redis 데이터 삭제 여부
+        self.should_clear_data = False
 
 
 class RealtimePipeline:
@@ -375,46 +378,82 @@ class WebSocketHandler:
 
     def __init__(self) -> None:
         self._active_sessions: dict[str, SessionState] = {}
+        # 세션 ID → 연결 ID 매핑 (재연결 지원)
+        self._session_connections: dict[str, str] = {}
 
     async def handle_connection(self, websocket: WebSocket) -> None:
         """WebSocket 연결 처리"""
         await websocket.accept()
 
-        session_id = str(uuid.uuid4())
+        # 임시 연결 ID (START_SESSION에서 실제 session_id로 교체)
+        connection_id = str(uuid.uuid4())
+        session_id = connection_id  # 초기값
         session = SessionState(session_id)
-        self._active_sessions[session_id] = session
+        self._active_sessions[connection_id] = session
+        
+        # session_id가 변경되었는지 추적
+        session_id_confirmed = False
 
         with LogContext(session_id=session_id):
-            logger.info("websocket_connected")
+            logger.info("websocket_connected", connection_id=connection_id)
 
             nlp = await get_nlp()
             graph_manager = await get_graph_manager()
 
-            pipeline = RealtimePipeline(websocket, session, nlp)
+            pipeline: RealtimePipeline | None = None
 
             try:
-                # BigQuery에 세션 시작 이벤트 기록
-                settings = get_settings()
-                if settings.enable_feedback:
-                    try:
-                        bigquery = await get_bigquery_client()
-                        await bigquery.insert_session_event(
-                            session_id, "session_start", {"timestamp": time.time()}
-                        )
-                    except Exception as e:
-                        logger.warning("session_event_logging_failed", error=str(e))
-
-                # 초기 그래프 상태 전송
-                initial_state = await graph_manager.get_full_state_for_client(session_id)
-                await self._send_message(websocket, WSMessageType.GRAPH_FULL, initial_state)
-
-                # 파이프라인 시작
-                await pipeline.start()
-
-                # 메시지 수신 루프
-                while session.is_active:
+                # 메시지 수신 루프 (START_SESSION을 먼저 기다림)
+                while True:
                     try:
                         data = await websocket.receive_json()
+                        msg_type = data.get("type", "")
+                        payload = data.get("payload", {})
+                        
+                        # START_SESSION에서 클라이언트 session_id 처리
+                        if msg_type == "START_SESSION" and not session_id_confirmed:
+                            client_session_id = payload.get("sessionId")
+                            if client_session_id:
+                                # 클라이언트가 제공한 session_id 사용
+                                session_id = client_session_id
+                                session.session_id = session_id
+                                logger.info("session_id_restored", 
+                                           client_session_id=client_session_id,
+                                           connection_id=connection_id)
+                            
+                            session_id_confirmed = True
+                            
+                            # BigQuery에 세션 시작 이벤트 기록
+                            settings = get_settings()
+                            if settings.enable_feedback:
+                                try:
+                                    bigquery = await get_bigquery_client()
+                                    await bigquery.insert_session_event(
+                                        session_id, "session_start", {"timestamp": time.time()}
+                                    )
+                                except Exception as e:
+                                    logger.warning("session_event_logging_failed", error=str(e))
+
+                            # 초기 그래프 상태 전송 (기존 세션 복원)
+                            initial_state = await graph_manager.get_full_state_for_client(session_id)
+                            await self._send_message(websocket, WSMessageType.GRAPH_FULL, initial_state)
+
+                            # 파이프라인 시작
+                            pipeline = RealtimePipeline(websocket, session, nlp)
+                            await pipeline.start()
+                            
+                            # 언어 코드 설정
+                            if "config" in payload and payload["config"]:
+                                config = payload["config"]
+                                if "languageCodes" in config:
+                                    session.language_codes = config["languageCodes"]
+                            
+                            logger.info("session_started", session_id=session_id)
+                            continue
+                        
+                        if not session.is_active:
+                            break
+                            
                         await self._handle_message(websocket, session, pipeline, data)
                     except WebSocketDisconnect:
                         break
@@ -423,20 +462,25 @@ class WebSocketHandler:
                 logger.error("websocket_error", error=str(e))
             finally:
                 session.is_active = False
-                await pipeline.stop()
+                if pipeline:
+                    await pipeline.stop()
                 
-                # Redis 정리
-                redis = await get_redis()
-                await redis.clear_session(session_id)
+                # Redis 정리: 명시적 종료(END_SESSION with clearSession=True) 시에만 삭제
+                # 일반 연결 종료 시에는 데이터 보존 (재연결 가능)
+                if session.should_clear_data:
+                    redis = await get_redis()
+                    await redis.clear_session(session_id)
+                    logger.info("session_data_cleared", session_id=session_id)
                 
-                del self._active_sessions[session_id]
-                logger.info("websocket_disconnected")
+                if connection_id in self._active_sessions:
+                    del self._active_sessions[connection_id]
+                logger.info("websocket_disconnected", session_id=session_id)
 
     async def _handle_message(
         self,
         websocket: WebSocket,
         session: SessionState,
-        pipeline: RealtimePipeline,
+        pipeline: RealtimePipeline | None,
         data: dict[str, Any],
     ) -> None:
         """수신 메시지 처리"""
@@ -446,19 +490,19 @@ class WebSocketHandler:
 
             match msg_type:
                 case WSMessageType.AUDIO_CHUNK:
-                    chunk_payload = AudioChunkPayload(**payload)
-                    session.audio_format = chunk_payload.format
-                    asyncio.create_task(pipeline.process_audio_chunk(chunk_payload))
+                    if pipeline:
+                        chunk_payload = AudioChunkPayload(**payload)
+                        session.audio_format = chunk_payload.format
+                        asyncio.create_task(pipeline.process_audio_chunk(chunk_payload))
 
                 case WSMessageType.START_SESSION:
-                    logger.info("session_started", session_id=session.session_id)
-                    # 언어 코드 설정 (있는 경우)
-                    if "config" in payload and payload["config"]:
-                        config = payload["config"]
-                        if "languageCodes" in config:
-                            session.language_codes = config["languageCodes"]
+                    # 이미 handle_connection에서 처리됨
+                    pass
 
                 case WSMessageType.END_SESSION:
+                    # clearSession 플래그 확인
+                    clear_session = payload.get("clearSession", False)
+                    session.should_clear_data = clear_session
                     await self._handle_end_session(websocket, session)
 
                 case WSMessageType.SUBMIT_FEEDBACK:

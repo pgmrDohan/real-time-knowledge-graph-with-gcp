@@ -6,6 +6,9 @@
 import { useCallback, useRef, useState, useEffect } from 'react';
 import { useGraphStore } from '../store/graphStore';
 
+// Session ID 관리 상수
+const SESSION_ID_KEY = 'rkg_session_id';
+
 // 메시지 타입
 type WSMessageType =
   | 'AUDIO_CHUNK'
@@ -45,12 +48,27 @@ interface WSMessage {
   messageId: string;
 }
 
+// Session ID 유틸리티 함수
+function getOrCreateSessionId(): string {
+  let sessionId = localStorage.getItem(SESSION_ID_KEY);
+  if (!sessionId) {
+    sessionId = crypto.randomUUID();
+    localStorage.setItem(SESSION_ID_KEY, sessionId);
+  }
+  return sessionId;
+}
+
+function clearSessionId(): void {
+  localStorage.removeItem(SESSION_ID_KEY);
+}
+
 export function useWebSocket() {
   const wsRef = useRef<WebSocket | null>(null);
   const [isConnected, setIsConnected] = useState(false);
-  const reconnectTimeoutRef = useRef<NodeJS.Timeout>();
-  const pingIntervalRef = useRef<NodeJS.Timeout>();
+  const reconnectTimeoutRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  const pingIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const sequenceRef = useRef(0);
+  const sessionIdRef = useRef<string>(getOrCreateSessionId());
 
   const {
     setGraphState,
@@ -68,9 +86,26 @@ export function useWebSocket() {
         const message: WSMessage = JSON.parse(event.data);
 
         switch (message.type) {
-          case 'GRAPH_FULL':
-            setGraphState(message.payload as any);
+          case 'GRAPH_FULL': {
+            const payload = message.payload as { entities?: unknown[]; relations?: unknown[]; version?: number };
+            const hasEntities = payload.entities && payload.entities.length > 0;
+            const hasRelations = payload.relations && payload.relations.length > 0;
+            const isServerEmpty = !hasEntities && !hasRelations;
+            
+            // 서버에서 빈 그래프가 오고, 클라이언트에 이미 데이터가 있으면 무시
+            // (재연결 시 새 session_id로 인한 초기화 방지)
+            const currentState = useGraphStore.getState().graphState;
+            const hasLocalData = currentState && 
+              (currentState.entities.length > 0 || currentState.relations.length > 0);
+            
+            if (isServerEmpty && hasLocalData) {
+              console.log('[WS] Ignoring empty GRAPH_FULL - local data exists');
+              break;
+            }
+            
+            setGraphState(payload as any);
             break;
+          }
 
           case 'GRAPH_DELTA':
             applyDelta(message.payload as any);
@@ -242,6 +277,7 @@ export function useWebSocket() {
     (languageCodes?: string[]) => {
       sequenceRef.current = 0;
       sendMessage('START_SESSION', {
+        sessionId: sessionIdRef.current,  // 기존 session_id 전달
         config: languageCodes ? { languageCodes } : null,
       });
     },
@@ -249,8 +285,13 @@ export function useWebSocket() {
   );
 
   // 세션 종료
-  const endSession = useCallback(() => {
-    sendMessage('END_SESSION', {});
+  const endSession = useCallback((clearSession = false) => {
+    sendMessage('END_SESSION', { clearSession });
+    if (clearSession) {
+      // 명시적 종료 시에만 session_id 삭제
+      clearSessionId();
+      sessionIdRef.current = getOrCreateSessionId();
+    }
   }, [sendMessage]);
 
   // 피드백 제출
