@@ -113,7 +113,7 @@ resource "google_redis_instance" "main" {
 
   auth_enabled = true
 
-  transit_encryption_mode = "SERVER_AUTHENTICATION"
+  transit_encryption_mode = "DISABLED"
 
   maintenance_policy {
     weekly_maintenance_window {

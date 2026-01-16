@@ -59,7 +59,7 @@ class Settings(BaseSettings):
         default="localhost", description="Redis 호스트"
     )
     redis_port: int = Field(
-        default=6378, description="Redis 포트"
+        default=6379, description="Redis 포트"
     )
     redis_password: str = Field(
         default="", description="Redis 비밀번호 (Memorystore AUTH)"
