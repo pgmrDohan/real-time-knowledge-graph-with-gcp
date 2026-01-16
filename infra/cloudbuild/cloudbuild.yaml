@@ -4,7 +4,7 @@
 substitutions:
   _SERVICE_NAME: knowledge-graph-api
   _REGION: asia-northeast3
-  _VPC_CONNECTOR: knowledge-graph-vpc-connector
+  _VPC_CONNECTOR: kg-vpc-connector1
   _REDIS_HOST: ""  # Memorystore 호스트
   _GCS_BUCKET: ""  # Cloud Storage 버킷
   _BQ_DATASET: knowledge_graph

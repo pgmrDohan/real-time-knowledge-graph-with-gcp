@@ -165,7 +165,7 @@ terraform output storage_bucket
 substitutions:
   _SERVICE_NAME: knowledge-graph-api
   _REGION: asia-northeast3
-  _VPC_CONNECTOR: knowledge-graph-vpc-connector
+  _VPC_CONNECTOR: kg-vpc-connector1
   _REDIS_HOST: "10.x.x.x"  # terraform output redis_host 값
   _GCS_BUCKET: "your-project-id-knowledge-graph-data"
   _BQ_DATASET: knowledge_graph
@@ -188,7 +188,7 @@ gcloud run deploy knowledge-graph-api \
     --region asia-northeast3 \
     --platform managed \
     --allow-unauthenticated \
-    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-connector kg-vpc-connector1 \
     --vpc-egress private-ranges-only \
     --memory 2Gi \
     --cpu 2 \
@@ -206,7 +206,7 @@ gcloud run deploy knowledge-graph-api \
     --region asia-northeast3 \
     --platform managed \
     --allow-unauthenticated \
-    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-connector kg-vpc-connector1 \
     --vpc-egress private-ranges-only \
     --memory 2Gi \
     --cpu 2 \
@@ -290,7 +290,7 @@ gcloud run deploy knowledge-graph-api \
     --region asia-northeast3 \
     --platform managed \
     --allow-unauthenticated \
-    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-connector kg-vpc-connector1 \
     --vpc-egress private-ranges-only \
     --memory 2Gi \
     --cpu 2 \
@@ -314,7 +314,7 @@ gcloud run deploy knowledge-graph-api \
     --region asia-northeast3 \
     --platform managed \
     --allow-unauthenticated \
-    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-connector kg-vpc-connector1 \
     --vpc-egress private-ranges-only \
     --memory 2Gi \
     --cpu 2 \
@@ -460,7 +460,7 @@ gcloud run services logs read knowledge-graph-api --region=asia-northeast3
 
 ```bash
 # VPC 커넥터 상태
-gcloud compute networks vpc-access connectors describe knowledge-graph-vpc-connector \
+gcloud compute networks vpc-access connectors describe kg-vpc-connector1 \
     --region=asia-northeast3
 
 # Redis 인스턴스 상태

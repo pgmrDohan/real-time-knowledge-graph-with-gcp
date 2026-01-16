@@ -12,7 +12,7 @@
 
 - **실시간 시스템 오디오 캡처** - Electron desktopCapturer를 통한 시스템 사운드 캡처
 - **Cloud Speech-to-Text v2** - Chirp 2 모델 기반 다국어 음성 인식 (한국어, 영어, 일본어, 중국어)
-- **Vertex AI Gemini** - gemini-2.0-flash 모델을 활용한 엔티티/관계 추출
+- **Vertex AI Gemini** - gemini-2.5-flash 모델을 활용한 엔티티/관계 추출
 - **피드백 기반 AI 개선** - 사용자 만족도를 학습하여 추출 품질 지속 개선
 - **실시간 그래프 시각화** - React Flow 기반 인터랙티브 지식 그래프
 - **노드 겹침 방지** - Force-directed 레이아웃 알고리즘으로 자동 배치
@@ -135,10 +135,10 @@ GCP_PROJECT_ID=your-project-id
 GCP_REGION=asia-northeast3
 
 # Vertex AI
-VERTEX_AI_MODEL=gemini-2.0-flash-001
+VERTEX_AI_MODEL=gemini-2.5-flash
 
 # Cloud Speech
-SPEECH_LANGUAGE_CODES=ko-KR,en-US,ja-JP,zh-CN
+SPEECH_LANGUAGE_CODES=ko-KR
 
 # Cloud Storage
 GCS_BUCKET_NAME=your-bucket-name
@@ -223,21 +223,12 @@ gcloud builds submit --config=infra/cloudbuild/cloudbuild.yaml
 |-----------|------|--------|
 | `GCP_PROJECT_ID` | GCP 프로젝트 ID | - |
 | `GCP_REGION` | GCP 리전 | `asia-northeast3` |
-| `VERTEX_AI_MODEL` | Vertex AI 모델 | `gemini-2.0-flash-001` |
-| `SPEECH_LANGUAGE_CODES` | STT 언어 코드 | `ko-KR,en-US,ja-JP,zh-CN` |
+| `VERTEX_AI_MODEL` | Vertex AI 모델 | `gemini-2.5-flash` |
+| `SPEECH_LANGUAGE_CODES` | STT 언어 코드 | `ko-KR` |
 | `GCS_BUCKET_NAME` | Cloud Storage 버킷 | - |
 | `BQ_DATASET_ID` | BigQuery 데이터셋 | `knowledge_graph` |
 | `REDIS_HOST` | Redis 호스트 | `localhost` |
 | `ENABLE_FEEDBACK` | 피드백 기능 활성화 | `true` |
-
-### 지원 언어
-
-| 코드 | 언어 |
-|------|------|
-| `ko-KR` | 한국어 |
-| `en-US` | 영어 (미국) |
-| `ja-JP` | 일본어 |
-| `zh-CN` | 중국어 (간체) |
 
 ## 🔧 문제 해결
 

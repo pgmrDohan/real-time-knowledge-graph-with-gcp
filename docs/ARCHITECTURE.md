@@ -34,7 +34,7 @@
 │  │  │                      │                         │              │   │ │ │
 │  │  │  ┌───────────────────▼───────┐  ┌─────────────▼───────────┐  │   │ │ │
 │  │  │  │ Cloud Speech-to-Text v2   │  │     Vertex AI           │  │   │ │ │
-│  │  │  │ • Chirp 2 Model           │  │     (Gemini 2.0 Flash)  │  │   │ │ │
+│  │  │  │ • Chirp 2 Model           │  │     (Gemini 2.5 Flash)  │  │   │ │ │
 │  │  │  │ • Multi-language          │  │     • Entity Extraction │  │   │ │ │
 │  │  │  │   (KO, EN, JA, ZH)        │  │     • Relation Mining   │  │   │ │ │
 │  │  │  └───────────────────────────┘  └─────────────────────────┘  │   │ │ │
