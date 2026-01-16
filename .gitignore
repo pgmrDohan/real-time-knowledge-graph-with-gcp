@@ -51,5 +51,6 @@ coverage/
 .cache/
 *.local
 
-
-
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars

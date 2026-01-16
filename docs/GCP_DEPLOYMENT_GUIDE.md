@@ -81,6 +81,11 @@ gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
 gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
     --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')@cloudbuild.gserviceaccount.com" \
     --role="roles/iam.serviceAccountUser"
+
+# Secret Manager 접근 권한 (Redis 비밀번호 사용 시 필요)
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')@cloudbuild.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
 ```
 
 ---
@@ -176,7 +181,8 @@ docker build -t gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
 # Container Registry에 푸시
 docker push gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest
 
-# Cloud Run 배포
+# Cloud Run 배포 (Redis 비밀번호는 Secret Manager 또는 환경 변수로 설정)
+# 방법 1: Secret Manager 사용 (권장)
 gcloud run deploy knowledge-graph-api \
     --image gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
     --region asia-northeast3 \
@@ -190,10 +196,41 @@ gcloud run deploy knowledge-graph-api \
     --concurrency 80 \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph"
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
+    --update-secrets="REDIS_PASSWORD=redis-auth:latest"
+
+# 방법 2: 환경 변수로 직접 설정
+# terraform output redis_auth_string 으로 비밀번호 확인 후
+gcloud run deploy knowledge-graph-api \
+    --image gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
+    --region asia-northeast3 \
+    --platform managed \
+    --allow-unauthenticated \
+    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-egress private-ranges-only \
+    --memory 2Gi \
+    --cpu 2 \
+    --timeout 300 \
+    --concurrency 80 \
+    --min-instances 0 \
+    --max-instances 10 \
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
 ```
 
 ### 3. Cloud Build 트리거 설정 (CI/CD)
+
+**사전 설정 필요**: Cloud Build에서 Secret Manager를 사용하려면 다음을 먼저 설정하세요:
+
+```bash
+# 1. Redis 비밀번호를 Secret Manager에 저장
+terraform output redis_auth_string
+echo -n "YOUR_REDIS_AUTH_STRING" | gcloud secrets create redis-auth --data-file=-
+
+# 2. Cloud Build 서비스 계정에 Secret Manager 접근 권한 부여 (이미 위에서 설정했다면 생략)
+gcloud projects add-iam-policy-binding YOUR_PROJECT_ID \
+    --member="serviceAccount:$(gcloud projects describe YOUR_PROJECT_ID --format='value(projectNumber)')@cloudbuild.gserviceaccount.com" \
+    --role="roles/secretmanager.secretAccessor"
+```
 
 ```bash
 # GitHub 저장소 연결 (콘솔에서 수행 권장)
@@ -234,19 +271,61 @@ Terraform에서 이미 다음 보안 설정이 적용됩니다:
 | `roles/bigquery.dataEditor` | BigQuery 데이터 쓰기 |
 | `roles/redis.editor` | Memorystore 접근 |
 
-### 3. Secret Manager (선택사항)
+### 3. Redis 비밀번호 설정
 
-민감한 정보는 Secret Manager 사용 권장:
+Memorystore Redis는 인증이 활성화되어 있으므로 비밀번호가 필요합니다.
+
+#### 방법 1: Secret Manager 사용 (권장)
 
 ```bash
-# Redis 비밀번호 저장
-echo -n "REDIS_AUTH_STRING" | gcloud secrets create redis-auth --data-file=-
+# 1. Terraform에서 Redis 비밀번호 확인
+terraform output redis_auth_string
 
-# Cloud Run에서 사용
+# 2. Secret Manager에 비밀번호 저장
+echo -n "YOUR_REDIS_AUTH_STRING" | gcloud secrets create redis-auth --data-file=-
+
+# 3. Cloud Run 배포 시 Secret 참조
 gcloud run deploy knowledge-graph-api \
-    ... \
+    --image gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
+    --region asia-northeast3 \
+    --platform managed \
+    --allow-unauthenticated \
+    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-egress private-ranges-only \
+    --memory 2Gi \
+    --cpu 2 \
+    --timeout 300 \
+    --concurrency 80 \
+    --min-instances 0 \
+    --max-instances 10 \
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
     --update-secrets="REDIS_PASSWORD=redis-auth:latest"
 ```
+
+#### 방법 2: 환경 변수로 직접 설정 (간단하지만 덜 안전)
+
+```bash
+# Terraform에서 Redis 비밀번호 확인
+terraform output redis_auth_string
+
+# Cloud Run 배포 시 환경 변수로 직접 설정
+gcloud run deploy knowledge-graph-api \
+    --image gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
+    --region asia-northeast3 \
+    --platform managed \
+    --allow-unauthenticated \
+    --vpc-connector knowledge-graph-vpc-connector \
+    --vpc-egress private-ranges-only \
+    --memory 2Gi \
+    --cpu 2 \
+    --timeout 300 \
+    --concurrency 80 \
+    --min-instances 0 \
+    --max-instances 10 \
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
+```
+
+**참고**: Secret Manager를 사용하면 비밀번호가 환경 변수에 노출되지 않아 더 안전합니다.
 
 ### 4. Cloud Armor (DDoS 방지)
 
@@ -264,7 +343,9 @@ gcloud compute security-policies rules create 1000 \
     --action rate-based-ban \
     --rate-limit-threshold-count 100 \
     --rate-limit-threshold-interval-sec 60 \
-    --ban-duration-sec 300
+    --ban-duration-sec 300 \
+    --conform-action allow \
+    --exceed-action deny-403
 ```
 
 ---

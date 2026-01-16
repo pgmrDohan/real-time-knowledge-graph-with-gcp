@@ -33,27 +33,6 @@ provider "google-beta" {
 }
 
 # ==============================================
-# 변수 정의
-# ==============================================
-
-variable "project_id" {
-  description = "GCP 프로젝트 ID"
-  type        = string
-}
-
-variable "region" {
-  description = "GCP 리전"
-  type        = string
-  default     = "asia-northeast3"
-}
-
-variable "environment" {
-  description = "환경 (dev, staging, prod)"
-  type        = string
-  default     = "dev"
-}
-
-# ==============================================
 # VPC 네트워크
 # ==============================================
 
@@ -85,7 +64,7 @@ resource "google_compute_subnetwork" "main" {
 
 # VPC Connector (Cloud Run → VPC)
 resource "google_vpc_access_connector" "connector" {
-  name          = "knowledge-graph-vpc-connector"
+  name          = "kg-vpc-connector1"
   region        = var.region
   project       = var.project_id
   network       = google_compute_network.main.name
