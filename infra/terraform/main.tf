@@ -380,7 +380,7 @@ resource "google_compute_firewall" "allow_internal" {
 
   allow {
     protocol = "tcp"
-    ports    = ["6379"]  # Redis
+    ports    = ["6378"]  # Redis
   }
 
   source_ranges = ["10.0.0.0/8"]

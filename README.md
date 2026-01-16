@@ -148,7 +148,7 @@ BQ_DATASET_ID=knowledge_graph
 
 # Redis (로컬 개발용)
 REDIS_HOST=localhost
-REDIS_PORT=6379
+REDIS_PORT=6378
 
 # 기타
 LOG_LEVEL=INFO
