@@ -123,10 +123,15 @@ async def root() -> dict[str, str]:
 @app.get("/health")
 async def health_check() -> JSONResponse:
     """헬스 체크"""
-    redis_healthy = await redis_manager.health_check()
+    try:
+        redis_healthy = await redis_manager.health_check()
+    except Exception as e:
+        logger.error("health_check_error", error=str(e))
+        redis_healthy = False
 
+    # 서비스는 실행 중이므로 항상 200 반환, Redis 상태는 degraded로 표시
     status = "healthy" if redis_healthy else "degraded"
-    status_code = 200 if redis_healthy else 503
+    status_code = 200
 
     return JSONResponse(
         status_code=status_code,

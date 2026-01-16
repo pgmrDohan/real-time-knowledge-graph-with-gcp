@@ -216,8 +216,11 @@ class RedisManager:
 
     async def health_check(self) -> bool:
         """Redis 연결 상태 확인"""
+        if not self._client:
+            logger.warning("redis_not_connected_for_health_check")
+            return False
         try:
-            await self.client.ping()
+            await self._client.ping()
             return True
         except Exception as e:
             logger.error("redis_health_check_failed", error=str(e))
