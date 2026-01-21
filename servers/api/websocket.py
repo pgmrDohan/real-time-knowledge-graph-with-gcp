@@ -394,9 +394,25 @@ class RealtimePipeline:
                 )
 
                 # 최종 결과에서 관계 처리 (모든 엔티티가 그래프에 추가된 후)
+                logger.info(
+                    "extraction_result_received",
+                    entities_count=len(extraction_result.entities),
+                    relations_count=len(extraction_result.relations),
+                    relations=[
+                        {"source": r.source, "target": r.target, "relation": r.relation}
+                        for r in extraction_result.relations
+                    ]
+                )
+                
                 if extraction_result.relations:
                     # 현재 상태 다시 조회 (스트리밍으로 추가된 엔티티 포함)
                     updated_state = await graph_manager.get_state(self._session.session_id)
+                    
+                    logger.info(
+                        "processing_relations",
+                        relations_count=len(extraction_result.relations),
+                        current_entities=[e.id for e in updated_state.entities],
+                    )
                     
                     from models import ExtractionResult
                     relations_result = ExtractionResult(
@@ -406,6 +422,15 @@ class RealtimePipeline:
                     
                     delta = await graph_manager.apply_extraction(
                         self._session.session_id, relations_result
+                    )
+                    
+                    logger.info(
+                        "relations_delta_created",
+                        added_relations=len(delta.added_relations),
+                        relations=[
+                            {"id": r.id, "source": r.source, "target": r.target, "relation": r.relation}
+                            for r in delta.added_relations
+                        ]
                     )
                     
                     if delta.added_relations:

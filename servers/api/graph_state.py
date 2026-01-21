@@ -106,7 +106,22 @@ class GraphStateManager:
                     current_state.entities.append(new_entity)
 
             # 2. 관계 처리
+            logger.info(
+                "processing_relations_batch",
+                relations_count=len(extraction.relations),
+                id_map=dict(id_map),
+                current_entity_ids=[e.id for e in current_state.entities],
+                current_entity_labels=[e.label for e in current_state.entities],
+            )
+            
             for extracted in extraction.relations:
+                logger.debug(
+                    "processing_single_relation",
+                    source=extracted.source,
+                    target=extracted.target,
+                    relation=extracted.relation,
+                )
+                
                 # ID 매핑 시도
                 source_id = id_map.get(extracted.source, extracted.source)
                 target_id = id_map.get(extracted.target, extracted.target)
@@ -114,25 +129,35 @@ class GraphStateManager:
                 # ID로 엔티티 찾기
                 source_entity = next((e for e in current_state.entities if e.id == source_id), None)
                 target_entity = next((e for e in current_state.entities if e.id == target_id), None)
+                
+                logger.debug(
+                    "relation_id_lookup",
+                    original_source=extracted.source,
+                    original_target=extracted.target,
+                    mapped_source=source_id,
+                    mapped_target=target_id,
+                    source_found_by_id=source_entity is not None,
+                    target_found_by_id=target_entity is not None,
+                )
 
                 # ID로 못 찾으면 라벨로 매칭 시도 (LLM이 라벨을 ID로 사용할 수 있음)
                 if not source_entity:
-                    source_entity = next(
-                        (e for e in current_state.entities 
-                         if self._normalize_label(e.label) == self._normalize_label(extracted.source)),
-                        None
-                    )
-                    if source_entity:
-                        source_id = source_entity.id
+                    normalized_source = self._normalize_label(extracted.source)
+                    for e in current_state.entities:
+                        if self._normalize_label(e.label) == normalized_source:
+                            source_entity = e
+                            source_id = e.id
+                            logger.debug("source_found_by_label", label=e.label, id=e.id)
+                            break
                         
                 if not target_entity:
-                    target_entity = next(
-                        (e for e in current_state.entities 
-                         if self._normalize_label(e.label) == self._normalize_label(extracted.target)),
-                        None
-                    )
-                    if target_entity:
-                        target_id = target_entity.id
+                    normalized_target = self._normalize_label(extracted.target)
+                    for e in current_state.entities:
+                        if self._normalize_label(e.label) == normalized_target:
+                            target_entity = e
+                            target_id = e.id
+                            logger.debug("target_found_by_label", label=e.label, id=e.id)
+                            break
 
                 # 유효성 검증
                 if not source_entity or not target_entity:
@@ -142,6 +167,7 @@ class GraphStateManager:
                         target=extracted.target,
                         source_found=source_entity is not None,
                         target_found=target_entity is not None,
+                        available_entities=[{"id": e.id, "label": e.label} for e in current_state.entities],
                     )
                     continue
 

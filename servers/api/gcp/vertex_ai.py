@@ -28,24 +28,44 @@ logger = get_logger(__name__)
 
 
 # ============================================
-# 최적화된 프롬프트 템플릿
+# 최적화된 프롬프트 템플릿 (Few-shot 예시 포함)
 # ============================================
 
-COMPACT_EXTRACTION_PROMPT = """Extract entities and relations from text. Be concise.
+COMPACT_EXTRACTION_PROMPT = """You are a knowledge graph extractor. Extract entities AND their relations from text.
 
-## Types
-PERSON|ORGANIZATION|LOCATION|CONCEPT|EVENT|PRODUCT|TECHNOLOGY|DATE|METRIC|ACTION
+## Entity Types
+PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, TECHNOLOGY, DATE, METRIC, ACTION
 
 ## Rules
-- Max 5 entities, 3 relations
-- Reuse existing entity IDs when applicable
-- Relations: use short verb phrases
-- Support: Korean, English, Japanese, Chinese
+- Extract 3-5 key entities
+- Extract 2-3 relations between entities (IMPORTANT!)
+- Relations should be short verb phrases (e.g., "works at", "is part of", "created")
+- Reuse existing entity IDs when the same entity is mentioned
 {context}
-## Text
+## Examples
+
+Input: "김철수는 삼성전자에서 일하며 AI 프로젝트를 담당한다."
+Output:
+```json
+{{"entities":[{{"id":"e1","label":"김철수","type":"PERSON"}},{{"id":"e2","label":"삼성전자","type":"ORGANIZATION"}},{{"id":"e3","label":"AI 프로젝트","type":"CONCEPT"}}],"relations":[{{"source":"e1","target":"e2","relation":"직장"}},{{"source":"e1","target":"e3","relation":"담당"}}]}}
+```
+
+Input: "Apple released iPhone 15 in California last September."
+Output:
+```json
+{{"entities":[{{"id":"e1","label":"Apple","type":"ORGANIZATION"}},{{"id":"e2","label":"iPhone 15","type":"PRODUCT"}},{{"id":"e3","label":"California","type":"LOCATION"}},{{"id":"e4","label":"September","type":"DATE"}}],"relations":[{{"source":"e1","target":"e2","relation":"released"}},{{"source":"e2","target":"e3","relation":"launched in"}},{{"source":"e2","target":"e4","relation":"released on"}}]}}
+```
+
+Input: "React는 Facebook이 개발한 프론트엔드 라이브러리다."
+Output:
+```json
+{{"entities":[{{"id":"e1","label":"React","type":"TECHNOLOGY"}},{{"id":"e2","label":"Facebook","type":"ORGANIZATION"}},{{"id":"e3","label":"프론트엔드 라이브러리","type":"CONCEPT"}}],"relations":[{{"source":"e2","target":"e1","relation":"개발"}},{{"source":"e1","target":"e3","relation":"종류"}}]}}
+```
+
+## Text to analyze
 "{text}"
 
-## Output (JSON only)
+## Output (JSON only, MUST include relations)
 ```json
 {{"entities":[{{"id":"e1","label":"Name","type":"TYPE"}}],"relations":[{{"source":"e1","target":"e2","relation":"verb"}}]}}
 ```"""
@@ -395,14 +415,20 @@ class PartialJSONParser:
             pattern = r'"relations"\s*:\s*\[(.*)'
             match = re.search(pattern, json_content, re.DOTALL)
             if not match:
+                logger.debug("streaming_no_relations_array_found")
                 return relations
         
         relations_str = match.group(1)
+        logger.debug("streaming_relations_str", relations_str=relations_str[:200] if relations_str else "empty")
         
         # 개별 관계 객체 찾기 (중괄호 매칭)
         obj_pattern = r'\{[^{}]+\}'
-        for obj_match in re.finditer(obj_pattern, relations_str):
+        found_objects = list(re.finditer(obj_pattern, relations_str))
+        logger.debug("streaming_found_relation_objects", count=len(found_objects))
+        
+        for obj_match in found_objects:
             obj_str = obj_match.group(0)
+            logger.debug("streaming_parsing_relation_obj", obj_str=obj_str)
             
             # 각 필드를 개별적으로 추출 (순서 무관)
             source_match = re.search(r'"source"\s*:\s*"([^"]+)"', obj_str)
@@ -410,11 +436,26 @@ class PartialJSONParser:
             relation_match = re.search(r'"relation"\s*:\s*"([^"]+)"', obj_str)
             
             if source_match and target_match and relation_match:
-                relations.append(ExtractedRelation(
+                rel = ExtractedRelation(
                     source=source_match.group(1),
                     target=target_match.group(1),
                     relation=relation_match.group(1)
-                ))
+                )
+                relations.append(rel)
+                logger.debug(
+                    "streaming_relation_parsed",
+                    source=rel.source,
+                    target=rel.target,
+                    relation=rel.relation
+                )
+            else:
+                logger.debug(
+                    "streaming_relation_incomplete",
+                    has_source=source_match is not None,
+                    has_target=target_match is not None,
+                    has_relation=relation_match is not None,
+                    obj_str=obj_str
+                )
         
         return relations
 
@@ -665,6 +706,8 @@ Keep the response under 200 words.
 
     def _parse_response(self, content: str) -> ExtractionResult:
         """LLM 응답에서 JSON 추출 및 파싱"""
+        logger.debug("parsing_llm_response", content_preview=content[:500])
+        
         # JSON 블록 추출
         json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
         if json_match:
@@ -675,9 +718,20 @@ Keep the response under 200 words.
             if json_match:
                 json_str = json_match.group(0)
             else:
+                logger.error("json_not_found_in_response", content_preview=content[:200])
                 raise ValueError(f"JSON not found in response: {content[:200]}")
 
+        logger.debug("extracted_json_string", json_str=json_str[:300])
+        
         data = json.loads(json_str)
+        
+        # 원본 데이터 로깅
+        logger.info(
+            "parsed_json_data",
+            entities_count=len(data.get("entities", [])),
+            relations_count=len(data.get("relations", [])),
+            raw_relations=data.get("relations", []),
+        )
 
         # 엔티티 변환
         entities = []
@@ -697,14 +751,28 @@ Keep the response under 200 words.
         # 관계 변환
         relations = []
         for r in data.get("relations", []):
-            relations.append(
-                ExtractedRelation(
-                    source=r.get("source", ""),
-                    target=r.get("target", ""),
-                    relation=r.get("relation", ""),
+            source = r.get("source", "")
+            target = r.get("target", "")
+            relation = r.get("relation", "")
+            
+            if source and target and relation:
+                relations.append(
+                    ExtractedRelation(
+                        source=source,
+                        target=target,
+                        relation=relation,
+                    )
                 )
-            )
+                logger.debug("relation_parsed", source=source, target=target, relation=relation)
+            else:
+                logger.warning("incomplete_relation_skipped", raw=r)
 
+        logger.info(
+            "extraction_result",
+            entities_count=len(entities),
+            relations_count=len(relations),
+        )
+        
         return ExtractionResult(entities=entities, relations=relations)
 
 
