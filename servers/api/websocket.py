@@ -12,7 +12,7 @@ from typing import Any
 from fastapi import WebSocket, WebSocketDisconnect
 
 from config import get_settings
-from extraction import get_extraction_pipeline
+from extraction import get_extraction_pipeline, ExtractionPipeline
 from gcp.speech_to_text import get_speech_client
 from gcp.feedback import get_feedback_manager
 from gcp.storage import get_storage_client
@@ -24,9 +24,13 @@ from models import (
     AudioFormat,
     ErrorCode,
     ErrorPayload,
+    ExtractedEntity,
+    ExtractedRelation,
     FeedbackPayload,
     FeedbackResultPayload,
     GraphDelta,
+    GraphEntity,
+    GraphRelation,
     ProcessingStage,
     ProcessingStatusPayload,
     RequestFeedbackPayload,
@@ -301,10 +305,10 @@ class RealtimePipeline:
         return results
 
     # ============================================
-    # Worker 3: Extraction (Vertex AI Gemini)
+    # Worker 3: Extraction (Vertex AI Gemini) - 스트리밍 지원
     # ============================================
     async def _extraction_worker(self) -> None:
-        """추출 워커 - Vertex AI로 엔티티/관계 추출"""
+        """추출 워커 - Vertex AI로 엔티티/관계 추출 (스트리밍)"""
         logger.info("extraction_worker_started")
         
         pipeline = await get_extraction_pipeline()
@@ -312,6 +316,10 @@ class RealtimePipeline:
         
         sentence_buffer: list[str] = []
         last_extraction_time = time.time()
+        
+        # 스트리밍 중 부분 결과 추적용
+        streaming_entities: list[ExtractedEntity] = []
+        streaming_relations: list[ExtractedRelation] = []
         
         while self._session.is_active:
             try:
@@ -338,27 +346,66 @@ class RealtimePipeline:
                 last_extraction_time = time.time()
                 
                 current_state = await graph_manager.get_state(self._session.session_id)
+                
+                # 스트리밍 부분 결과 초기화
+                streaming_entities.clear()
+                streaming_relations.clear()
 
-                extraction_result = await pipeline.process_chunk(
-                    text=combined_text,
-                    morphemes=None,
-                    existing_entities=current_state.entities,
-                    existing_relations=current_state.relations,
-                )
-
-                if extraction_result.entities or extraction_result.relations:
-                    await self._send_status(ProcessingStage.UPDATING_GRAPH)
+                # 스트리밍 부분 결과 콜백
+                async def on_partial_result(
+                    new_entities: list[ExtractedEntity],
+                    new_relations: list[ExtractedRelation]
+                ) -> None:
+                    """부분 결과가 파싱되면 즉시 그래프에 적용하고 클라이언트에 전송"""
+                    if not new_entities and not new_relations:
+                        return
                     
-                    delta = await graph_manager.apply_extraction(
-                        self._session.session_id, extraction_result
+                    streaming_entities.extend(new_entities)
+                    streaming_relations.extend(new_relations)
+                    
+                    # 부분 결과를 즉시 그래프에 적용
+                    from models import ExtractionResult
+                    partial_result = ExtractionResult(
+                        entities=new_entities,
+                        relations=new_relations
                     )
                     
-                    await self._send_graph_delta(delta)
-                    
+                    try:
+                        delta = await graph_manager.apply_extraction(
+                            self._session.session_id, partial_result
+                        )
+                        
+                        # 실제로 추가된 것이 있으면 즉시 전송
+                        if delta.added_entities or delta.added_relations or delta.updated_entities:
+                            await self._send_graph_delta(delta)
+                            logger.debug(
+                                "streaming_partial_sent",
+                                entities=len(delta.added_entities),
+                                relations=len(delta.added_relations),
+                            )
+                    except Exception as e:
+                        logger.warning("streaming_partial_apply_error", error=str(e))
+
+                # 스트리밍 추출 실행
+                extraction_result = await pipeline.process_chunk_streaming(
+                    text=combined_text,
+                    existing_entities=current_state.entities,
+                    existing_relations=current_state.relations,
+                    on_partial=on_partial_result,
+                )
+
+                # 최종 결과 확인 (스트리밍 중 놓친 것이 있는지)
+                # 이미 스트리밍으로 대부분 처리되었으므로 로깅만
+                total_entities = len(extraction_result.entities)
+                total_relations = len(extraction_result.relations)
+                
+                if total_entities > 0 or total_relations > 0:
                     logger.info(
-                        "extraction_complete",
-                        entities=len(extraction_result.entities),
-                        relations=len(extraction_result.relations),
+                        "streaming_extraction_complete",
+                        total_entities=total_entities,
+                        total_relations=total_relations,
+                        streamed_entities=len(streaming_entities),
+                        streamed_relations=len(streaming_relations),
                     )
 
                 await self._send_status(ProcessingStage.IDLE)
