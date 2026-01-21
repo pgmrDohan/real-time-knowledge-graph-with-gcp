@@ -33,16 +33,17 @@ class CloudSpeechToText:
             return
 
         settings = get_settings()
-        location = settings.speech_location  # 기본값: us-central1
+        location = settings.speech_location  # 기본값: us (멀티리전)
 
-        # Speech 클라이언트 생성 (Chirp 3을 위한 us 리전 엔드포인트)
+        # Speech 클라이언트 생성 (Chirp 3을 위한 멀티리전 엔드포인트)
+        # 멀티리전(us, eu)은 "{location}-speech.googleapis.com" 형식
         self._client = SpeechClient(
             client_options=ClientOptions(
                 api_endpoint=f"{location}-speech.googleapis.com",
             )
         )
 
-        # Recognizer 경로 설정 (Chirp 3 모델)
+        # Recognizer 경로 설정 (Chirp 3 모델 - us/eu 멀티리전 지원)
         self._recognizer_name = (
             f"projects/{settings.gcp_project_id}/locations/{location}/recognizers/_"
         )
@@ -51,7 +52,7 @@ class CloudSpeechToText:
         logger.info(
             "cloud_speech_initialized",
             project=settings.gcp_project_id,
-            region=location,
+            location=location,
             model="chirp_3",
             language_codes=settings.speech_language_codes,
         )

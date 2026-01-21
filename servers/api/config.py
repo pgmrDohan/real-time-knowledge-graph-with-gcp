@@ -42,8 +42,8 @@ class Settings(BaseSettings):
         description="STT 언어 코드 (auto: 자동 감지, 또는 BCP-47 코드)"
     )
     speech_location: str = Field(
-        default="us-central1",
-        description="Speech-to-Text 리전 (Chirp 3는 us-central1 권장)"
+        default="us",
+        description="Speech-to-Text 리전 (Chirp 3는 us, eu 멀티리전 사용)"
     )
 
     # ============================================

@@ -162,7 +162,7 @@ VERTEX_AI_LOCATION=us-central1
 
 # Cloud Speech-to-Text (Chirp 3)
 SPEECH_LANGUAGE_CODES=auto
-SPEECH_LOCATION=us-central1
+SPEECH_LOCATION=us
 
 # Cloud Storage
 GCS_BUCKET_NAME=your-bucket-name
@@ -268,7 +268,7 @@ gcloud builds submit --config=infra/cloudbuild/cloudbuild.yaml
 | `VERTEX_AI_MODEL` | Vertex AI 모델 | `gemini-2.5-flash-lite` |
 | `VERTEX_AI_LOCATION` | Vertex AI 리전 (모델 가용 리전) | `us-central1` |
 | `SPEECH_LANGUAGE_CODES` | STT 언어 코드 (`auto`: 자동 감지) | `auto` |
-| `SPEECH_LOCATION` | STT 리전 (Chirp 3) | `us-central1` |
+| `SPEECH_LOCATION` | STT 리전 (Chirp 3: `us` 또는 `eu` 멀티리전) | `us` |
 | `GCS_BUCKET_NAME` | Cloud Storage 버킷 | - |
 | `BQ_DATASET_ID` | BigQuery 데이터셋 | `knowledge_graph` |
 | `REDIS_HOST` | Redis 호스트 | `localhost` |
