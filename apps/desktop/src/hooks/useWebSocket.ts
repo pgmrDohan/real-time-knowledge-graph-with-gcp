@@ -163,7 +163,7 @@ export function useWebSocket() {
     if (wsRef.current?.readyState === WebSocket.OPEN) return;
 
     // 개발/프로덕션 환경에 따른 URL 설정
-    const wsUrl = import.meta.env.VITE_WS_URL || 'ws://localhost:8000/ws';
+    const wsUrl = import.meta.env.VITE_WS_URL || 'wss://knowledge-graph-api-l7xzsmm33q-du.a.run.app/ws';
 
     const ws = new WebSocket(wsUrl);
 

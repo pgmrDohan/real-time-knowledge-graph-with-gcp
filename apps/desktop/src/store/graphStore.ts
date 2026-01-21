@@ -453,18 +453,25 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
 
   // 최종 STT 결과 추가
   addFinalSTT: (payload) => {
-    set((state) => ({
-      transcripts: [
-        ...state.transcripts,
-        {
-          id: payload.segmentId,
-          text: payload.text,
-          isPartial: false,
-          timestamp: Date.now(),
-        },
-      ],
-      currentPartialText: '',
-    }));
+    set((state) => {
+      // 중복 체크: 이미 동일한 segmentId가 있으면 추가하지 않음
+      const exists = state.transcripts.some((t) => t.id === payload.segmentId);
+      if (exists) {
+        return { currentPartialText: '' };
+      }
+      return {
+        transcripts: [
+          ...state.transcripts,
+          {
+            id: payload.segmentId,
+            text: payload.text,
+            isPartial: false,
+            timestamp: Date.now(),
+          },
+        ],
+        currentPartialText: '',
+      };
+    });
   },
 
   // 트랜스크립트 초기화

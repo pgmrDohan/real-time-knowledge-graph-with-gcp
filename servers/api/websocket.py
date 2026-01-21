@@ -194,6 +194,10 @@ class RealtimePipeline:
         logger.info("nlp_worker_started")
         
         text_buffer = ""
+        sentence_counter = 0
+        last_text_time = time.time()
+        FORCE_FLUSH_TIMEOUT = 3.0  # 3초 동안 새 텍스트 없으면 강제 확정
+        MIN_FLUSH_LENGTH = 50  # 최소 10자 이상이면 강제 확정 대상
         
         while self._session.is_active:
             try:
@@ -201,13 +205,26 @@ class RealtimePipeline:
                     new_text = await asyncio.wait_for(
                         self._text_queue.get(), timeout=0.5
                     )
+                    last_text_time = time.time()
                 except asyncio.TimeoutError:
-                    if text_buffer:
-                        sentences = self._extract_complete_sentences(text_buffer)
-                        if sentences:
-                            for sent, remaining in sentences:
-                                await self._sentence_queue.put(sent)
-                                text_buffer = remaining
+                    # 타임아웃: 버퍼에 텍스트가 있고 오래 되었으면 강제 확정
+                    if text_buffer and len(text_buffer) >= MIN_FLUSH_LENGTH:
+                        time_since_last = time.time() - last_text_time
+                        if time_since_last >= FORCE_FLUSH_TIMEOUT:
+                            # 완전한 문장이 아니어도 강제 확정
+                            sentence_counter += 1
+                            await self._send_stt_final(
+                                STTFinalPayload(
+                                    text=text_buffer.strip(),
+                                    confidence=0.85,
+                                    segmentId=f"{self._session.session_id}_sent_{sentence_counter}",
+                                    morphemes=None,
+                                    isComplete=True,
+                                )
+                            )
+                            await self._sentence_queue.put(text_buffer.strip())
+                            text_buffer = ""
+                            logger.debug("forced_flush_incomplete_sentence")
                     continue
 
                 await self._send_status(ProcessingStage.NLP_ANALYZING)
@@ -218,11 +235,12 @@ class RealtimePipeline:
                 sentences = self._extract_complete_sentences(text_buffer)
                 
                 for sentence, remaining in sentences:
+                    sentence_counter += 1
                     await self._send_stt_final(
                         STTFinalPayload(
                             text=sentence,
                             confidence=0.9,
-                            segmentId=f"{self._session.session_id}_sent",
+                            segmentId=f"{self._session.session_id}_sent_{sentence_counter}",
                             morphemes=None,
                             isComplete=True,
                         )
@@ -242,28 +260,43 @@ class RealtimePipeline:
         logger.info("nlp_worker_stopped")
 
     def _extract_complete_sentences(self, text: str) -> list[tuple[str, str]]:
-        """완성된 문장 추출 (다국어 지원)"""
+        """완성된 문장 추출 (다국어 지원, 유연한 매칭)"""
         results = []
         
-        # 다국어 문장 종결 패턴
+        # 다국어 문장 종결 패턴 (우선순위 순서)
         endings = [
-            "다.", "요.", "니다.", "세요.", "까요?", "습니다.", "입니다.", "네요.", "죠.", "요?",
-            ". ", "! ", "? ",  # 영어
-            "。", "！", "？",  # 일본어/중국어
+            # 한국어 종결 어미
+            "습니다.", "입니다.", "합니다.", "됩니다.", "있습니다.", "없습니다.",
+            "니다.", "세요.", "까요?", "나요?", "네요.", "군요.", "거든요.",
+            "다.", "요.", "죠.", "요?", "죠?",
+            # 영어/일반
+            ". ", "! ", "? ", ".\n", "!\n", "?\n",
+            # 일본어/중국어
+            "。", "！", "？",
+            # 쉼표로 끊기는 경우도 긴 텍스트면 분리
         ]
         
         remaining = text
-        for ending in endings:
-            while ending in remaining:
-                idx = remaining.find(ending)
-                if idx != -1:
-                    sentence = remaining[:idx + len(ending)].strip()
-                    remaining = remaining[idx + len(ending):].strip()
-                    if len(sentence) > 5:
-                        results.append((sentence, remaining))
+        found_any = True
         
-        if results:
-            results[-1] = (results[-1][0], remaining)
+        while found_any:
+            found_any = False
+            best_idx = -1
+            best_ending = ""
+            
+            # 가장 먼저 나오는 종결 패턴 찾기
+            for ending in endings:
+                idx = remaining.find(ending)
+                if idx != -1 and (best_idx == -1 or idx < best_idx):
+                    best_idx = idx
+                    best_ending = ending
+                    found_any = True
+            
+            if found_any and best_idx != -1:
+                sentence = remaining[:best_idx + len(best_ending)].strip()
+                remaining = remaining[best_idx + len(best_ending):].strip()
+                if len(sentence) > 3:  # 최소 3자 이상
+                    results.append((sentence, remaining))
         
         return results
 

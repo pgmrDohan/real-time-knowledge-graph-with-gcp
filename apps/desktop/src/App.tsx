@@ -29,6 +29,7 @@ export function App() {
     (state) => state.setShowFeedbackDialog
   );
   const setFeedbackRequest = useGraphStore((state) => state.setFeedbackRequest);
+  const resetGraph = useGraphStore((state) => state.resetGraph);
 
   // 컴포넌트 마운트 시 WebSocket 연결
   useEffect(() => {
@@ -41,8 +42,9 @@ export function App() {
   const handleToggleCapture = async () => {
     if (isCapturing) {
       stopCapture();
-      // 세션 종료 메시지 전송 (피드백 요청 트리거)
-      endSession();
+      // 세션 완전 초기화: 서버 세션 클리어 + 클라이언트 그래프 초기화
+      endSession(true);
+      resetGraph();
     } else {
       await startCapture();
       // 세션 시작 메시지 전송
