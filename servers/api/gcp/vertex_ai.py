@@ -426,10 +426,10 @@ class VertexAIClient:
 
         settings = get_settings()
 
-        # Vertex AI 초기화
+        # Vertex AI 초기화 (별도 리전 사용)
         vertexai.init(
             project=settings.gcp_project_id,
-            location=settings.gcp_region,
+            location=settings.vertex_ai_location,
         )
 
         # Gemini 모델 로드
@@ -439,6 +439,7 @@ class VertexAIClient:
         logger.info(
             "vertex_ai_initialized",
             project=settings.gcp_project_id,
+            location=settings.vertex_ai_location,
             model=settings.vertex_ai_model,
         )
 

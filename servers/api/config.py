@@ -20,12 +20,16 @@ class Settings(BaseSettings):
         default="", description="GCP 프로젝트 ID"
     )
     gcp_region: str = Field(
-        default="global", description="GCP 리전 (서울)"
+        default="asia-northeast3", description="GCP 리전 (Cloud Run, Storage 등)"
     )
 
     # ============================================
     # Vertex AI (Gemini)
     # ============================================
+    vertex_ai_location: str = Field(
+        default="us-central1", 
+        description="Vertex AI 리전 (모델 가용성에 따라 다름)"
+    )
     vertex_ai_model: str = Field(
         default="gemini-2.5-flash-lite", description="Vertex AI 모델"
     )
