@@ -351,23 +351,24 @@ class RealtimePipeline:
                 streaming_entities.clear()
                 streaming_relations.clear()
 
-                # 스트리밍 부분 결과 콜백
+                # 스트리밍 부분 결과 콜백 - 엔티티만 즉시 전송
                 async def on_partial_result(
                     new_entities: list[ExtractedEntity],
                     new_relations: list[ExtractedRelation]
                 ) -> None:
-                    """부분 결과가 파싱되면 즉시 그래프에 적용하고 클라이언트에 전송"""
-                    if not new_entities and not new_relations:
-                        return
-                    
+                    """엔티티가 파싱되면 즉시 그래프에 적용 (관계는 나중에 처리)"""
+                    # 엔티티/관계 누적 (최종 처리용)
                     streaming_entities.extend(new_entities)
                     streaming_relations.extend(new_relations)
                     
-                    # 부분 결과를 즉시 그래프에 적용
+                    # 엔티티만 즉시 전송 (관계는 ID 매핑 문제로 나중에 처리)
+                    if not new_entities:
+                        return
+                    
                     from models import ExtractionResult
                     partial_result = ExtractionResult(
                         entities=new_entities,
-                        relations=new_relations
+                        relations=[]  # 관계는 제외
                     )
                     
                     try:
@@ -375,13 +376,11 @@ class RealtimePipeline:
                             self._session.session_id, partial_result
                         )
                         
-                        # 실제로 추가된 것이 있으면 즉시 전송
-                        if delta.added_entities or delta.added_relations or delta.updated_entities:
+                        if delta.added_entities or delta.updated_entities:
                             await self._send_graph_delta(delta)
                             logger.debug(
-                                "streaming_partial_sent",
+                                "streaming_entities_sent",
                                 entities=len(delta.added_entities),
-                                relations=len(delta.added_relations),
                             )
                     except Exception as e:
                         logger.warning("streaming_partial_apply_error", error=str(e))
@@ -394,8 +393,28 @@ class RealtimePipeline:
                     on_partial=on_partial_result,
                 )
 
-                # 최종 결과 확인 (스트리밍 중 놓친 것이 있는지)
-                # 이미 스트리밍으로 대부분 처리되었으므로 로깅만
+                # 최종 결과에서 관계 처리 (모든 엔티티가 그래프에 추가된 후)
+                if extraction_result.relations:
+                    # 현재 상태 다시 조회 (스트리밍으로 추가된 엔티티 포함)
+                    updated_state = await graph_manager.get_state(self._session.session_id)
+                    
+                    from models import ExtractionResult
+                    relations_result = ExtractionResult(
+                        entities=[],  # 엔티티는 이미 처리됨
+                        relations=extraction_result.relations
+                    )
+                    
+                    delta = await graph_manager.apply_extraction(
+                        self._session.session_id, relations_result
+                    )
+                    
+                    if delta.added_relations:
+                        await self._send_graph_delta(delta)
+                        logger.debug(
+                            "streaming_relations_sent",
+                            relations=len(delta.added_relations),
+                        )
+                
                 total_entities = len(extraction_result.entities)
                 total_relations = len(extraction_result.relations)
                 
@@ -404,8 +423,6 @@ class RealtimePipeline:
                         "streaming_extraction_complete",
                         total_entities=total_entities,
                         total_relations=total_relations,
-                        streamed_entities=len(streaming_entities),
-                        streamed_relations=len(streaming_relations),
                     )
 
                 await self._send_status(ProcessingStage.IDLE)

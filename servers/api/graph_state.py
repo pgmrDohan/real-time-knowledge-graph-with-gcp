@@ -107,20 +107,41 @@ class GraphStateManager:
 
             # 2. 관계 처리
             for extracted in extraction.relations:
+                # ID 매핑 시도
                 source_id = id_map.get(extracted.source, extracted.source)
                 target_id = id_map.get(extracted.target, extracted.target)
 
-                # 유효성 검증
-                source_exists = any(e.id == source_id for e in current_state.entities)
-                target_exists = any(e.id == target_id for e in current_state.entities)
+                # ID로 엔티티 찾기
+                source_entity = next((e for e in current_state.entities if e.id == source_id), None)
+                target_entity = next((e for e in current_state.entities if e.id == target_id), None)
 
-                if not source_exists or not target_exists:
+                # ID로 못 찾으면 라벨로 매칭 시도 (LLM이 라벨을 ID로 사용할 수 있음)
+                if not source_entity:
+                    source_entity = next(
+                        (e for e in current_state.entities 
+                         if self._normalize_label(e.label) == self._normalize_label(extracted.source)),
+                        None
+                    )
+                    if source_entity:
+                        source_id = source_entity.id
+                        
+                if not target_entity:
+                    target_entity = next(
+                        (e for e in current_state.entities 
+                         if self._normalize_label(e.label) == self._normalize_label(extracted.target)),
+                        None
+                    )
+                    if target_entity:
+                        target_id = target_entity.id
+
+                # 유효성 검증
+                if not source_entity or not target_entity:
                     logger.warning(
                         "relation_skipped_missing_entity",
-                        source=source_id,
-                        target=target_id,
-                        source_exists=source_exists,
-                        target_exists=target_exists,
+                        source=extracted.source,
+                        target=extracted.target,
+                        source_found=source_entity is not None,
+                        target_found=target_entity is not None,
                     )
                     continue
 

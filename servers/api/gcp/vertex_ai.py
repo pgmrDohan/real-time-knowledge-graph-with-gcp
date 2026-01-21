@@ -385,7 +385,7 @@ class PartialJSONParser:
         return entities
     
     def _try_parse_relations(self, json_content: str) -> list[ExtractedRelation]:
-        """관계 배열 파싱 시도"""
+        """관계 배열 파싱 시도 (유연한 필드 순서 지원)"""
         relations = []
         
         # "relations": [...] 패턴 찾기
@@ -399,15 +399,22 @@ class PartialJSONParser:
         
         relations_str = match.group(1)
         
-        # 개별 관계 객체 파싱
-        relation_pattern = r'\{\s*"source"\s*:\s*"([^"]+)"\s*,\s*"target"\s*:\s*"([^"]+)"\s*,\s*"relation"\s*:\s*"([^"]+)"\s*\}'
-        for m in re.finditer(relation_pattern, relations_str):
-            source, target, relation = m.groups()
-            relations.append(ExtractedRelation(
-                source=source,
-                target=target,
-                relation=relation
-            ))
+        # 개별 관계 객체 찾기 (중괄호 매칭)
+        obj_pattern = r'\{[^{}]+\}'
+        for obj_match in re.finditer(obj_pattern, relations_str):
+            obj_str = obj_match.group(0)
+            
+            # 각 필드를 개별적으로 추출 (순서 무관)
+            source_match = re.search(r'"source"\s*:\s*"([^"]+)"', obj_str)
+            target_match = re.search(r'"target"\s*:\s*"([^"]+)"', obj_str)
+            relation_match = re.search(r'"relation"\s*:\s*"([^"]+)"', obj_str)
+            
+            if source_match and target_match and relation_match:
+                relations.append(ExtractedRelation(
+                    source=source_match.group(1),
+                    target=target_match.group(1),
+                    relation=relation_match.group(1)
+                ))
         
         return relations
 
