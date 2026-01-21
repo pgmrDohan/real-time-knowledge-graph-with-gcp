@@ -69,6 +69,10 @@ export function useWebSocket() {
   const pingIntervalRef = useRef<NodeJS.Timeout | undefined>(undefined);
   const sequenceRef = useRef(0);
   const sessionIdRef = useRef<string>(getOrCreateSessionId());
+  
+  // 세션 활성 상태 추적 (녹음 중인지)
+  const isSessionActiveRef = useRef(false);
+  const lastLanguageCodesRef = useRef<string[] | undefined>(undefined);
 
   const {
     setGraphState,
@@ -184,6 +188,22 @@ export function useWebSocket() {
           );
         }
       }, 30000);
+      
+      // 세션이 활성화 상태였으면 자동으로 재시작 (재연결 시)
+      if (isSessionActiveRef.current) {
+        console.log('[WS] Reconnected - restoring session:', sessionIdRef.current);
+        ws.send(
+          JSON.stringify({
+            type: 'START_SESSION',
+            payload: {
+              sessionId: sessionIdRef.current,
+              config: lastLanguageCodesRef.current ? { languageCodes: lastLanguageCodesRef.current } : null,
+            },
+            timestamp: Date.now(),
+            messageId: crypto.randomUUID(),
+          })
+        );
+      }
     };
 
     ws.onmessage = handleMessage;
@@ -276,6 +296,10 @@ export function useWebSocket() {
   const startSession = useCallback(
     (languageCodes?: string[]) => {
       sequenceRef.current = 0;
+      isSessionActiveRef.current = true;  // 세션 활성화 상태 저장
+      lastLanguageCodesRef.current = languageCodes;  // 언어 코드 저장 (재연결용)
+      
+      console.log('[WS] Starting session:', sessionIdRef.current);
       sendMessage('START_SESSION', {
         sessionId: sessionIdRef.current,  // 기존 session_id 전달
         config: languageCodes ? { languageCodes } : null,
@@ -286,6 +310,7 @@ export function useWebSocket() {
 
   // 세션 종료
   const endSession = useCallback((clearSession = false) => {
+    isSessionActiveRef.current = false;  // 세션 비활성화
     sendMessage('END_SESSION', { clearSession });
     if (clearSession) {
       // 명시적 종료 시에만 session_id 삭제

@@ -84,16 +84,68 @@ interface GraphStoreState {
 }
 
 /**
- * Dagre 기반 자동 레이아웃 알고리즘
- * - 연결된 노드를 가까이 배치
- * - 노드 간 겹침 방지
- * - 무한 캔버스 지원 (경계 제한 없음)
+ * 연결된 컴포넌트(클러스터) 찾기
+ */
+function findConnectedComponents(
+  entities: GraphEntity[],
+  relations: GraphRelation[]
+): GraphEntity[][] {
+  const entityIds = new Set(entities.map(e => e.id));
+  const adjacency = new Map<string, Set<string>>();
+  
+  // 인접 리스트 생성
+  entities.forEach(e => adjacency.set(e.id, new Set()));
+  relations.forEach(r => {
+    if (entityIds.has(r.source) && entityIds.has(r.target)) {
+      adjacency.get(r.source)?.add(r.target);
+      adjacency.get(r.target)?.add(r.source);
+    }
+  });
+  
+  const visited = new Set<string>();
+  const components: GraphEntity[][] = [];
+  
+  // BFS로 연결된 컴포넌트 찾기
+  entities.forEach(entity => {
+    if (visited.has(entity.id)) return;
+    
+    const component: GraphEntity[] = [];
+    const queue = [entity.id];
+    
+    while (queue.length > 0) {
+      const nodeId = queue.shift()!;
+      if (visited.has(nodeId)) continue;
+      
+      visited.add(nodeId);
+      const node = entities.find(e => e.id === nodeId);
+      if (node) component.push(node);
+      
+      adjacency.get(nodeId)?.forEach(neighbor => {
+        if (!visited.has(neighbor)) {
+          queue.push(neighbor);
+        }
+      });
+    }
+    
+    if (component.length > 0) {
+      components.push(component);
+    }
+  });
+  
+  // 크기 순으로 정렬 (큰 컴포넌트 먼저)
+  return components.sort((a, b) => b.length - a.length);
+}
+
+/**
+ * 클러스터 기반 균형 레이아웃
+ * - 연결된 컴포넌트별로 dagre 적용
+ * - 컴포넌트들을 그리드 형태로 배치
+ * - 가로/세로 비율 유지
  */
 function calculateDagreLayout(
   entities: GraphEntity[],
   relations: GraphRelation[],
-  existingPositions: Map<string, { x: number; y: number }>,
-  direction: 'TB' | 'LR' = 'LR'  // TB: 위→아래, LR: 왼쪽→오른쪽
+  existingPositions: Map<string, { x: number; y: number }>
 ): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
   
@@ -101,14 +153,92 @@ function calculateDagreLayout(
     return positions;
   }
 
+  // 연결된 컴포넌트 찾기
+  const components = findConnectedComponents(entities, relations);
+  
+  // 각 컴포넌트의 레이아웃 계산
+  const componentLayouts: Array<{
+    positions: Map<string, { x: number; y: number }>;
+    width: number;
+    height: number;
+    entities: GraphEntity[];
+  }> = [];
+  
+  // 고립 노드(크기 1)와 연결된 컴포넌트 분리
+  const isolatedNodes: GraphEntity[] = [];
+  const connectedComponents: GraphEntity[][] = [];
+  
+  components.forEach(component => {
+    if (component.length === 1) {
+      isolatedNodes.push(component[0]);
+    } else {
+      connectedComponents.push(component);
+    }
+  });
+  
+  // 연결된 컴포넌트들 레이아웃 계산
+  connectedComponents.forEach(component => {
+    // 해당 컴포넌트의 관계만 필터링
+    const componentIds = new Set(component.map(e => e.id));
+    const componentRelations = relations.filter(
+      r => componentIds.has(r.source) && componentIds.has(r.target)
+    );
+    
+    // 컴포넌트 크기에 따라 레이아웃 방향 결정
+    // 작은 컴포넌트는 가로, 큰 컴포넌트는 랜덤하게 방향 변경
+    const direction = component.length > 5 ? (component.length % 2 === 0 ? 'LR' : 'TB') : 'LR';
+    
+    const layout = calculateSingleComponentLayout(
+      component, 
+      componentRelations, 
+      existingPositions,
+      direction as 'TB' | 'LR'
+    );
+    
+    componentLayouts.push(layout);
+  });
+  
+  // 컴포넌트들을 그리드 형태로 배치
+  arrangeComponentsInGrid(componentLayouts, positions, existingPositions);
+  
+  // 고립 노드들은 오른쪽 영역에 별도 배치
+  arrangeIsolatedNodes(isolatedNodes, positions, existingPositions);
+  
+  return positions;
+}
+
+/**
+ * 단일 컴포넌트 레이아웃 계산
+ */
+function calculateSingleComponentLayout(
+  entities: GraphEntity[],
+  relations: GraphRelation[],
+  existingPositions: Map<string, { x: number; y: number }>,
+  direction: 'TB' | 'LR'
+): {
+  positions: Map<string, { x: number; y: number }>;
+  width: number;
+  height: number;
+  entities: GraphEntity[];
+} {
+  const positions = new Map<string, { x: number; y: number }>();
+  
+  if (entities.length === 1) {
+    // 단일 노드는 그냥 배치
+    const existing = existingPositions.get(entities[0].id);
+    positions.set(entities[0].id, existing || { x: 0, y: 0 });
+    return { positions, width: NODE_WIDTH, height: NODE_HEIGHT, entities };
+  }
+  
   // Dagre 그래프 생성
   const g = new dagre.graphlib.Graph();
   g.setGraph({
     rankdir: direction,
-    nodesep: NODE_SPACING_X,  // 같은 rank 내 노드 간 간격
-    ranksep: NODE_SPACING_Y,  // rank 간 간격
-    marginx: 50,
-    marginy: 50,
+    nodesep: NODE_SPACING_X * 0.8,  // 약간 조밀하게
+    ranksep: NODE_SPACING_Y * 0.8,
+    marginx: 30,
+    marginy: 30,
+    ranker: 'tight-tree',  // 더 컴팩트한 레이아웃
   });
   g.setDefaultEdgeLabel(() => ({}));
 
@@ -117,13 +247,11 @@ function calculateDagreLayout(
     g.setNode(entity.id, {
       width: NODE_WIDTH,
       height: NODE_HEIGHT,
-      label: entity.label,
     });
   });
 
-  // 엣지 추가 (관계)
+  // 엣지 추가
   relations.forEach((relation) => {
-    // source와 target이 모두 존재하는지 확인
     if (g.hasNode(relation.source) && g.hasNode(relation.target)) {
       g.setEdge(relation.source, relation.target);
     }
@@ -132,61 +260,152 @@ function calculateDagreLayout(
   // 레이아웃 계산
   dagre.layout(g);
 
-  // 결과 추출
+  // 결과 추출 및 경계 계산
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  
   g.nodes().forEach((nodeId) => {
     const node = g.node(nodeId);
     if (node) {
-      // 기존 위치가 있고, 해당 노드의 연결이 변하지 않았으면 기존 위치 유지 고려
-      const existing = existingPositions.get(nodeId);
-      
-      // 새 노드이거나 관계가 변경된 노드는 새 위치 사용
-      // 기존 노드는 부드럽게 이동 (기존 위치와 새 위치의 중간)
-      if (existing) {
-        // 기존 위치에서 새 위치로 부드럽게 이동 (80% 새 위치)
-        positions.set(nodeId, {
-          x: existing.x * 0.2 + node.x * 0.8,
-          y: existing.y * 0.2 + node.y * 0.8,
-        });
-      } else {
-        positions.set(nodeId, { x: node.x, y: node.y });
-      }
+      positions.set(nodeId, { x: node.x, y: node.y });
+      minX = Math.min(minX, node.x);
+      maxX = Math.max(maxX, node.x);
+      minY = Math.min(minY, node.y);
+      maxY = Math.max(maxY, node.y);
     }
   });
-
-  // 연결되지 않은 노드들 처리 (고립 노드)
-  const connectedNodes = new Set<string>();
-  relations.forEach((r) => {
-    connectedNodes.add(r.source);
-    connectedNodes.add(r.target);
-  });
-
-  // 고립 노드들은 별도 영역에 배치
-  const isolatedNodes = entities.filter((e) => !connectedNodes.has(e.id));
-  if (isolatedNodes.length > 0) {
-    // 기존 노드들의 최대 Y 위치 찾기
-    let maxY = 0;
-    positions.forEach((pos) => {
-      maxY = Math.max(maxY, pos.y);
+  
+  // 원점 기준으로 정규화
+  positions.forEach((pos, id) => {
+    positions.set(id, {
+      x: pos.x - minX,
+      y: pos.y - minY,
     });
+  });
+  
+  const width = maxX - minX + NODE_WIDTH;
+  const height = maxY - minY + NODE_HEIGHT;
+  
+  return { positions, width, height, entities };
+}
 
-    // 고립 노드들을 그리드 형태로 배치
-    const cols = Math.ceil(Math.sqrt(isolatedNodes.length));
-    isolatedNodes.forEach((entity, index) => {
-      const existing = existingPositions.get(entity.id);
+/**
+ * 컴포넌트들을 그리드 형태로 배치
+ * 가로/세로 비율을 유지하면서 균형있게 배치
+ */
+function arrangeComponentsInGrid(
+  componentLayouts: Array<{
+    positions: Map<string, { x: number; y: number }>;
+    width: number;
+    height: number;
+    entities: GraphEntity[];
+  }>,
+  finalPositions: Map<string, { x: number; y: number }>,
+  existingPositions: Map<string, { x: number; y: number }>
+): void {
+  if (componentLayouts.length === 0) return;
+  
+  // 목표 가로/세로 비율 (16:9에 가깝게)
+  const targetAspectRatio = 1.5;
+  
+  // 총 면적 계산
+  let totalArea = 0;
+  componentLayouts.forEach(layout => {
+    totalArea += (layout.width + NODE_SPACING_X) * (layout.height + NODE_SPACING_Y);
+  });
+  
+  // 목표 영역 크기 계산
+  const targetHeight = Math.sqrt(totalArea / targetAspectRatio);
+  const targetWidth = targetHeight * targetAspectRatio;
+  
+  // 그리드 열 수 결정 (2-4열)
+  const cols = Math.max(2, Math.min(4, Math.ceil(Math.sqrt(componentLayouts.length))));
+  
+  // 각 열의 현재 Y 위치
+  const columnHeights = new Array(cols).fill(0);
+  const columnX: number[] = [];
+  
+  // 열 X 위치 계산
+  let currentX = 0;
+  for (let i = 0; i < cols; i++) {
+    columnX.push(currentX);
+    currentX += targetWidth / cols + NODE_SPACING_X;
+  }
+  
+  // 컴포넌트들을 열에 배치 (가장 낮은 열에 배치)
+  componentLayouts.forEach((layout) => {
+    // 가장 낮은 열 찾기
+    let minColIdx = 0;
+    let minHeight = columnHeights[0];
+    for (let i = 1; i < cols; i++) {
+      if (columnHeights[i] < minHeight) {
+        minHeight = columnHeights[i];
+        minColIdx = i;
+      }
+    }
+    
+    const offsetX = columnX[minColIdx];
+    const offsetY = columnHeights[minColIdx];
+    
+    // 컴포넌트 내 노드들 배치
+    layout.positions.forEach((pos, entityId) => {
+      const existing = existingPositions.get(entityId);
+      const newPos = {
+        x: pos.x + offsetX,
+        y: pos.y + offsetY,
+      };
+      
+      // 기존 위치가 있으면 부드럽게 이동
       if (existing) {
-        positions.set(entity.id, existing);
-      } else {
-        const row = Math.floor(index / cols);
-        const col = index % cols;
-        positions.set(entity.id, {
-          x: 100 + col * NODE_SPACING_X,
-          y: maxY + NODE_SPACING_Y * 2 + row * NODE_SPACING_Y,
+        finalPositions.set(entityId, {
+          x: existing.x * 0.3 + newPos.x * 0.7,
+          y: existing.y * 0.3 + newPos.y * 0.7,
         });
+      } else {
+        finalPositions.set(entityId, newPos);
       }
     });
-  }
+    
+    // 열 높이 업데이트
+    columnHeights[minColIdx] += layout.height + NODE_SPACING_Y * 1.5;
+  });
+}
 
-  return positions;
+/**
+ * 고립 노드 배치 (연결이 없는 노드)
+ * 연결된 그래프와 별도로 오른쪽 영역에 그리드 형태로 배치
+ */
+function arrangeIsolatedNodes(
+  isolatedNodes: GraphEntity[],
+  positions: Map<string, { x: number; y: number }>,
+  existingPositions: Map<string, { x: number; y: number }>
+): void {
+  if (isolatedNodes.length === 0) return;
+  
+  // 기존 노드들의 경계 찾기
+  let maxX = 0;
+  positions.forEach((pos) => {
+    maxX = Math.max(maxX, pos.x);
+  });
+  
+  // 고립 노드들을 정사각형에 가까운 그리드로 배치
+  const cols = Math.ceil(Math.sqrt(isolatedNodes.length));
+  const startX = maxX + NODE_SPACING_X * 2;  // 기존 그래프 오른쪽에 배치
+  
+  isolatedNodes.forEach((entity, index) => {
+    const existing = existingPositions.get(entity.id);
+    if (existing) {
+      // 기존 위치 유지
+      positions.set(entity.id, existing);
+    } else {
+      const row = Math.floor(index / cols);
+      const col = index % cols;
+      positions.set(entity.id, {
+        x: startX + col * (NODE_WIDTH + NODE_SPACING_X * 0.5),
+        y: row * (NODE_HEIGHT + NODE_SPACING_Y * 0.5),
+      });
+    }
+  });
 }
 
 /**

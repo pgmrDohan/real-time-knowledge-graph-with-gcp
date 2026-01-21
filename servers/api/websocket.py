@@ -586,6 +586,16 @@ class WebSocketHandler:
                         
                         if not session.is_active:
                             break
+                        
+                        # START_SESSION 전에 다른 메시지가 오면 경고
+                        if not session_id_confirmed and msg_type != "START_SESSION":
+                            logger.warning(
+                                "message_before_session_start",
+                                msg_type=msg_type,
+                                connection_id=connection_id,
+                            )
+                            # START_SESSION 없이는 처리 불가
+                            continue
                             
                         await self._handle_message(websocket, session, pipeline, data)
                     except WebSocketDisconnect:
