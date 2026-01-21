@@ -20,7 +20,7 @@ class Settings(BaseSettings):
         default="", description="GCP 프로젝트 ID"
     )
     gcp_region: str = Field(
-        default="asia-northeast3", description="GCP 리전 (서울)"
+        default="global", description="GCP 리전 (서울)"
     )
 
     # ============================================
