@@ -12,7 +12,7 @@
 
 ### 핵심 기능
 - **실시간 시스템 오디오 캡처** - Electron desktopCapturer를 통한 시스템 사운드 캡처
-- **Cloud Speech-to-Text v2** - Chirp 2 모델 기반 다국어 음성 인식 (한국어, 영어, 일본어, 중국어)
+- **Cloud Speech-to-Text v2 (Chirp 3)** - 자동 언어 감지, 최신 Chirp 3 모델 기반 고품질 음성 인식
 - **Vertex AI Gemini 스트리밍 추출** - gemini-2.5-flash-lite 모델을 활용한 실시간 엔티티/관계 추출
 - **피드백 기반 AI 개선** - 사용자 만족도를 학습하여 추출 품질 지속 개선
 
@@ -160,8 +160,9 @@ GCP_REGION=asia-northeast3
 VERTEX_AI_MODEL=gemini-2.5-flash-lite
 VERTEX_AI_LOCATION=us-central1
 
-# Cloud Speech
-SPEECH_LANGUAGE_CODES=ko-KR
+# Cloud Speech-to-Text (Chirp 3)
+SPEECH_LANGUAGE_CODES=auto
+SPEECH_LOCATION=us-central1
 
 # Cloud Storage
 GCS_BUCKET_NAME=your-bucket-name
@@ -266,7 +267,8 @@ gcloud builds submit --config=infra/cloudbuild/cloudbuild.yaml
 | `GCP_REGION` | GCP 리전 (Cloud Run, Storage 등) | `asia-northeast3` |
 | `VERTEX_AI_MODEL` | Vertex AI 모델 | `gemini-2.5-flash-lite` |
 | `VERTEX_AI_LOCATION` | Vertex AI 리전 (모델 가용 리전) | `us-central1` |
-| `SPEECH_LANGUAGE_CODES` | STT 언어 코드 | `ko-KR` |
+| `SPEECH_LANGUAGE_CODES` | STT 언어 코드 (`auto`: 자동 감지) | `auto` |
+| `SPEECH_LOCATION` | STT 리전 (Chirp 3) | `us-central1` |
 | `GCS_BUCKET_NAME` | Cloud Storage 버킷 | - |
 | `BQ_DATASET_ID` | BigQuery 데이터셋 | `knowledge_graph` |
 | `REDIS_HOST` | Redis 호스트 | `localhost` |

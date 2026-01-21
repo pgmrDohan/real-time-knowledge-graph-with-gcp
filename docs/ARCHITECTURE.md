@@ -51,9 +51,9 @@
 │  │  │                      │                         │              │   │ │ │
 │  │  │  ┌───────────────────▼───────┐  ┌─────────────▼───────────┐  │   │ │ │
 │  │  │  │ Cloud Speech-to-Text v2   │  │     Vertex AI           │  │   │ │ │
-│  │  │  │ • Chirp 2 Model           │  │     (Gemini 2.5 Flash)  │  │   │ │ │
-│  │  │  │ • Multi-language          │  │     • Streaming Extract │  │   │ │ │
-│  │  │  │   (KO, EN, JA, ZH)        │  │     • Translation       │  │   │ │ │
+│  │  │  │ • Chirp 3 Model           │  │     (Gemini 2.5 Flash)  │  │   │ │ │
+│  │  │  │ • Auto Language Detection │  │     • Streaming Extract │  │   │ │ │
+│  │  │  │ • US Region (us-central1) │  │     • Translation       │  │   │ │ │
 │  │  │  └───────────────────────────┘  └─────────────────────────┘  │   │ │ │
 │  │  │                                                              │   │ │ │
 │  │  └──────────────────────────────────────────────────────────────┘   │ │ │
@@ -239,7 +239,7 @@
 
 | 서비스 | 역할 |
 |--------|------|
-| Cloud Speech-to-Text v2 | 다국어 실시간 음성 인식 |
+| Cloud Speech-to-Text v2 (Chirp 3) | 자동 언어 감지 실시간 음성 인식 (us-central1) |
 | Vertex AI (Gemini) | 지식 추출, 번역, 피드백 분석 |
 | Memorystore (Redis) | 세션 상태 및 그래프 캐시 |
 | Cloud Storage | 오디오/그래프 영구 저장 |

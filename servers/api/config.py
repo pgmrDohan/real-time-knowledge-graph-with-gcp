@@ -35,11 +35,15 @@ class Settings(BaseSettings):
     )
 
     # ============================================
-    # Cloud Speech-to-Text (Chirp 2 모델 BCP-47 코드)
+    # Cloud Speech-to-Text (Chirp 3 모델)
     # ============================================
     speech_language_codes: str = Field(
-        default="ko-KR",
-        description="STT 지원 언어 코드 (us-central1에서는 단일 언어만 지원)"
+        default="auto",
+        description="STT 언어 코드 (auto: 자동 감지, 또는 BCP-47 코드)"
+    )
+    speech_location: str = Field(
+        default="us-central1",
+        description="Speech-to-Text 리전 (Chirp 3는 us-central1 권장)"
     )
 
     # ============================================

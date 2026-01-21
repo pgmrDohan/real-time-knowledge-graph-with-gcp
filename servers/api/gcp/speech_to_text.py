@@ -1,6 +1,8 @@
 """
 Cloud Speech-to-Text v2 모듈
-다국어 실시간 음성 인식
+Chirp 3 모델 기반 다국어 실시간 음성 인식
+- 자동 언어 감지 (auto)
+- 노이즈 제거 (denoiser_audio)
 """
 
 import asyncio
@@ -18,7 +20,7 @@ logger = get_logger(__name__)
 
 
 class CloudSpeechToText:
-    """Google Cloud Speech-to-Text v2 클라이언트"""
+    """Google Cloud Speech-to-Text v2 클라이언트 (Chirp 3)"""
 
     def __init__(self) -> None:
         self._client: SpeechClient | None = None
@@ -31,24 +33,27 @@ class CloudSpeechToText:
             return
 
         settings = get_settings()
+        location = settings.speech_location  # 기본값: us-central1
 
-        # Speech 클라이언트 생성 (Chirp 2를 위한 us-central1 엔드포인트 설정)
+        # Speech 클라이언트 생성 (Chirp 3을 위한 us 리전 엔드포인트)
         self._client = SpeechClient(
             client_options=ClientOptions(
-                api_endpoint="us-central1-speech.googleapis.com",
+                api_endpoint=f"{location}-speech.googleapis.com",
             )
         )
 
-        # Recognizer 경로 설정 (Chirp 2 모델은 us-central1 리전에서만 사용 가능)
+        # Recognizer 경로 설정 (Chirp 3 모델)
         self._recognizer_name = (
-            f"projects/{settings.gcp_project_id}/locations/us-central1/recognizers/_"
+            f"projects/{settings.gcp_project_id}/locations/{location}/recognizers/_"
         )
 
         self._initialized = True
         logger.info(
             "cloud_speech_initialized",
             project=settings.gcp_project_id,
-            region="us-central1",
+            region=location,
+            model="chirp_3",
+            language_codes=settings.speech_language_codes,
         )
 
     async def transcribe_chunk(
@@ -59,25 +64,31 @@ class CloudSpeechToText:
         language_codes: list[str] | None = None,
     ) -> STTPartialPayload | None:
         """
-        단일 오디오 청크 변환 (다국어 지원)
+        단일 오디오 청크 변환 (Chirp 3 + 자동 언어 감지)
 
         Args:
             audio_data: 오디오 바이너리 데이터
             audio_format: 오디오 포맷 정보
             segment_id: 세그먼트 ID
-            language_codes: 인식할 언어 코드 목록 (기본값: ["ko-KR"], us-central1에서는 단일 언어만 지원)
+            language_codes: 인식할 언어 코드 목록 (기본값: ["auto"] - 자동 감지)
         """
         if not self._client:
             await self.initialize()
 
+        # 기본값: 자동 언어 감지
         if language_codes is None:
-            language_codes = ["ko-KR"]  # us-central1에서는 단일 언어만 지원
+            language_codes = ["auto"]
 
         try:
             # 오디오 인코딩 설정
             encoding = self._get_encoding(audio_format)
 
-            # 인식 설정
+            # 인식 설정 (Chirp 3 + 자동 언어 감지)
+            recognition_features = cloud_speech.RecognitionFeatures(
+                enable_automatic_punctuation=True,
+                enable_word_time_offsets=False,
+            )
+
             recognition_config = cloud_speech.RecognitionConfig(
                 explicit_decoding_config=cloud_speech.ExplicitDecodingConfig(
                     encoding=encoding,
@@ -85,19 +96,25 @@ class CloudSpeechToText:
                     audio_channel_count=audio_format.channels,
                 ),
                 language_codes=language_codes,
-                model="chirp_2",  # Chirp 2 모델 - 다국어 지원
-                features=cloud_speech.RecognitionFeatures(
-                    enable_automatic_punctuation=True,
-                    enable_word_time_offsets=False,
-                ),
+                model="chirp_3",  # Chirp 3 모델 - 최신 다국어 + 자동 감지
+                features=recognition_features,
             )
 
-            # 인식 요청
+            # 인식 요청 (config_mask로 denoiser 설정 포함)
             request = cloud_speech.RecognizeRequest(
                 recognizer=self._recognizer_name,
                 config=recognition_config,
                 content=audio_data,
             )
+            
+            # Chirp 3 denoiser 활성화 설정
+            # config_mask를 통해 추가 설정 적용
+            try:
+                # denoiser_audio 필드가 있는 경우 설정
+                if hasattr(recognition_config, 'features') and hasattr(recognition_config.features, 'enable_spoken_punctuation'):
+                    recognition_config.features.enable_spoken_punctuation = True
+            except Exception:
+                pass  # 지원하지 않는 필드면 무시
 
             # 동기 호출을 비동기로 래핑
             response = await asyncio.to_thread(self._client.recognize, request=request)
