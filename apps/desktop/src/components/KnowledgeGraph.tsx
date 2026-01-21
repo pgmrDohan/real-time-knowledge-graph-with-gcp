@@ -15,16 +15,39 @@ import ReactFlow, {
   BackgroundVariant,
   Node,
   NodeTypes,
+  DefaultEdgeOptions,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 import { useGraphStore } from '../store/graphStore';
 import { EntityNode } from './EntityNode';
 import { Network } from 'lucide-react';
 
+// ============================================
+// 컴포넌트 외부 정의 (메모이제이션 불필요)
+// ============================================
+
 // 커스텀 노드 타입
 const nodeTypes: NodeTypes = {
   entityNode: EntityNode,
 };
+
+// 기본 엣지 옵션
+const defaultEdgeOptions: DefaultEdgeOptions = {
+  type: 'smoothstep',
+  style: { stroke: '#4a5568', strokeWidth: 1 },
+};
+
+// fitView 옵션
+const fitViewOptions = { padding: 0.2 };
+
+// 미니맵 노드 색상 추출 함수
+const getNodeColor = (node: Node): string => {
+  const entityColor = (node.style as Record<string, string>)?.['--entity-color'];
+  return entityColor || '#4a5568';
+};
+
+// Pro 옵션 (attribution 숨김)
+const proOptions = { hideAttribution: true };
 
 export function KnowledgeGraph() {
   const storeNodes = useGraphStore((state) => state.nodes);
@@ -79,14 +102,11 @@ export function KnowledgeGraph() {
           onConnect={onConnect}
           nodeTypes={nodeTypes}
           fitView
-          fitViewOptions={{ padding: 0.2 }}
+          fitViewOptions={fitViewOptions}
           minZoom={0.1}
           maxZoom={2}
-          defaultEdgeOptions={{
-            type: 'smoothstep',
-            style: { stroke: '#4a5568', strokeWidth: 1 },
-          }}
-          proOptions={{ hideAttribution: true }}
+          defaultEdgeOptions={defaultEdgeOptions}
+          proOptions={proOptions}
         >
           {/* 배경 그리드 */}
           <Background
@@ -105,12 +125,7 @@ export function KnowledgeGraph() {
           {/* 미니맵 */}
           <MiniMap
             className="!bg-surface-800 !border-surface-600"
-            nodeColor={(node) => {
-              const entityColor = (node.style as Record<string, string>)?.[
-                '--entity-color'
-              ];
-              return entityColor || '#4a5568';
-            }}
+            nodeColor={getNodeColor}
             maskColor="rgba(10, 10, 15, 0.8)"
           />
         </ReactFlow>

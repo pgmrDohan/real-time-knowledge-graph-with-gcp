@@ -64,7 +64,7 @@ steps:
       - '--max-instances'
       - '10'
       - '--set-env-vars'
-      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},REDIS_HOST=${_REDIS_HOST},GCS_BUCKET_NAME=${_GCS_BUCKET},BQ_DATASET_ID=${_BQ_DATASET},VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true'
+      - 'GCP_PROJECT_ID=$PROJECT_ID,GCP_REGION=${_REGION},REDIS_HOST=${_REDIS_HOST},GCS_BUCKET_NAME=${_GCS_BUCKET},BQ_DATASET_ID=${_BQ_DATASET},VERTEX_AI_MODEL=gemini-2.5-flash-lite,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true'
       - '--update-secrets'
       - 'REDIS_PASSWORD=redis-auth:latest'
 

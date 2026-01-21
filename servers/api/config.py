@@ -27,7 +27,7 @@ class Settings(BaseSettings):
     # Vertex AI (Gemini)
     # ============================================
     vertex_ai_model: str = Field(
-        default="gemini-2.0-flash-001", description="Vertex AI 모델"
+        default="gemini-2.5-flash-lite", description="Vertex AI 모델"
     )
 
     # ============================================
