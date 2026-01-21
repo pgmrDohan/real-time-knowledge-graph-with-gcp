@@ -437,8 +437,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
           ...e,
           animated: false,
           style: { ...e.style, stroke: '#4a5568', strokeWidth: 1 },
-          data: { ...e.data, isNew: false },
-        })),
+          data: e.data ? { ...e.data, isNew: false } : e.data,
+        })) as Edge<RFEdgeData>[],
       }));
     }, 2000);
   },
