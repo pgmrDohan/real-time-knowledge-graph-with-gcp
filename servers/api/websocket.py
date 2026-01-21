@@ -350,6 +350,9 @@ class RealtimePipeline:
                 # 스트리밍 부분 결과 초기화
                 streaming_entities.clear()
                 streaming_relations.clear()
+                
+                # 스트리밍 중 ID 매핑 추적 (e1 → UUID)
+                streaming_id_map: dict[str, str] = {}
 
                 # 스트리밍 부분 결과 콜백 - 엔티티만 즉시 전송
                 async def on_partial_result(
@@ -372,9 +375,13 @@ class RealtimePipeline:
                     )
                     
                     try:
-                        delta = await graph_manager.apply_extraction(
+                        delta, id_map = await graph_manager.apply_extraction_with_id_map(
                             self._session.session_id, partial_result
                         )
+                        
+                        # ID 매핑 저장 (e1 → UUID)
+                        streaming_id_map.update(id_map)
+                        logger.debug("streaming_id_map_updated", id_map=id_map)
                         
                         if delta.added_entities or delta.updated_entities:
                             await self._send_graph_delta(delta)
@@ -412,6 +419,7 @@ class RealtimePipeline:
                         "processing_relations",
                         relations_count=len(extraction_result.relations),
                         current_entities=[e.id for e in updated_state.entities],
+                        streaming_id_map=streaming_id_map,
                     )
                     
                     from models import ExtractionResult
@@ -420,8 +428,11 @@ class RealtimePipeline:
                         relations=extraction_result.relations
                     )
                     
-                    delta = await graph_manager.apply_extraction(
-                        self._session.session_id, relations_result
+                    # ID 매핑을 전달하여 관계 처리
+                    delta = await graph_manager.apply_extraction_with_existing_id_map(
+                        self._session.session_id, 
+                        relations_result,
+                        existing_id_map=streaming_id_map
                     )
                     
                     logger.info(

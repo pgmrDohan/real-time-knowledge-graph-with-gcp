@@ -54,12 +54,33 @@ class GraphStateManager:
         self, session_id: str, extraction: ExtractionResult
     ) -> GraphDelta:
         """추출 결과를 그래프에 적용하고 델타 반환"""
+        delta, _ = await self._apply_extraction_internal(session_id, extraction, {})
+        return delta
+
+    async def apply_extraction_with_id_map(
+        self, session_id: str, extraction: ExtractionResult
+    ) -> tuple[GraphDelta, dict[str, str]]:
+        """추출 결과를 적용하고 ID 매핑도 반환"""
+        return await self._apply_extraction_internal(session_id, extraction, {})
+
+    async def apply_extraction_with_existing_id_map(
+        self, session_id: str, extraction: ExtractionResult, existing_id_map: dict[str, str]
+    ) -> GraphDelta:
+        """기존 ID 매핑을 사용하여 추출 결과 적용"""
+        delta, _ = await self._apply_extraction_internal(session_id, extraction, existing_id_map)
+        return delta
+
+    async def _apply_extraction_internal(
+        self, session_id: str, extraction: ExtractionResult, existing_id_map: dict[str, str]
+    ) -> tuple[GraphDelta, dict[str, str]]:
+        """추출 결과를 그래프에 적용하고 델타와 ID 매핑 반환 (내부 구현)"""
         async with self._lock:
             current_state = await self.get_state(session_id)
             now = int(time.time() * 1000)
 
             # ID 매핑 (추출된 임시 ID → 최종 ID)
-            id_map: dict[str, str] = {}
+            # 기존 매핑으로 시작
+            id_map: dict[str, str] = dict(existing_id_map)
 
             added_entities: list[GraphEntity] = []
             updated_entities: list[GraphEntity] = []
@@ -240,7 +261,7 @@ class GraphStateManager:
                 updated_entities=len(updated_entities),
             )
 
-            return delta
+            return delta, id_map
 
     async def get_full_state_for_client(self, session_id: str) -> dict[str, Any]:
         """클라이언트 전송용 전체 상태"""
