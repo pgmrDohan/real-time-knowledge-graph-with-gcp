@@ -196,7 +196,7 @@ gcloud run deploy knowledge-graph-api \
     --concurrency 80 \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,VERTEX_AI_MODEL=gemini-2.5-flash-lite,VERTEX_AI_LOCATION=us-central1,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
     --update-secrets="REDIS_PASSWORD=redis-auth:latest"
 
 # 방법 2: 환경 변수로 직접 설정
@@ -214,8 +214,19 @@ gcloud run deploy knowledge-graph-api \
     --concurrency 80 \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,VERTEX_AI_MODEL=gemini-2.5-flash-lite,VERTEX_AI_LOCATION=us-central1,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
 ```
+
+**중요: Vertex AI 리전 설정**
+
+일부 Gemini 모델은 특정 리전에서만 사용 가능합니다:
+
+| 모델 | 사용 가능 리전 |
+|------|---------------|
+| `gemini-2.5-flash-lite` | `us-central1`, `europe-west1` |
+| `gemini-2.0-flash-001` | 대부분 리전 |
+
+`VERTEX_AI_LOCATION` 환경 변수를 사용하여 Cloud Run 리전(`GCP_REGION`)과 별도로 Vertex AI API를 호출할 리전을 설정할 수 있습니다. 예: Cloud Run은 `asia-northeast3`에 배포하고, Vertex AI는 `us-central1`에서 호출.
 
 ### 3. Cloud Build 트리거 설정 (CI/CD)
 
@@ -298,7 +309,7 @@ gcloud run deploy knowledge-graph-api \
     --concurrency 80 \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,VERTEX_AI_MODEL=gemini-2.5-flash-lite,VERTEX_AI_LOCATION=us-central1,REDIS_HOST=10.x.x.x,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true" \
     --update-secrets="REDIS_PASSWORD=redis-auth:latest"
 ```
 
@@ -322,7 +333,7 @@ gcloud run deploy knowledge-graph-api \
     --concurrency 80 \
     --min-instances 0 \
     --max-instances 10 \
-    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,VERTEX_AI_MODEL=gemini-2.5-flash,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
+    --set-env-vars "GCP_PROJECT_ID=YOUR_PROJECT_ID,GCP_REGION=asia-northeast3,VERTEX_AI_MODEL=gemini-2.5-flash-lite,VERTEX_AI_LOCATION=us-central1,REDIS_HOST=10.x.x.x,REDIS_PASSWORD=YOUR_REDIS_AUTH_STRING,GCS_BUCKET_NAME=bucket-name,BQ_DATASET_ID=knowledge_graph,SPEECH_LANGUAGE_CODES=ko-KR,LOG_FORMAT=json,DEBUG=false,ENABLE_FEEDBACK=true"
 ```
 
 **참고**: Secret Manager를 사용하면 비밀번호가 환경 변수에 노출되지 않아 더 안전합니다.
@@ -475,6 +486,34 @@ gcloud projects get-iam-policy YOUR_PROJECT_ID \
     --flatten="bindings[].members" \
     --filter="bindings.members:knowledge-graph-api@"
 ```
+
+### Vertex AI "404 Publisher Model" 오류
+
+특정 Gemini 모델이 해당 리전에서 사용 불가능할 때 발생합니다.
+
+```
+404 Publisher Model projects/xxx/locations/asia-northeast3/publishers/google/models/gemini-2.5-flash-lite not found.
+```
+
+**해결 방법:**
+
+1. `VERTEX_AI_LOCATION` 환경 변수를 모델이 지원되는 리전으로 설정:
+   ```bash
+   VERTEX_AI_LOCATION=us-central1
+   ```
+
+2. 또는 다른 모델 사용:
+   ```bash
+   VERTEX_AI_MODEL=gemini-2.0-flash-001
+   ```
+
+**모델별 지원 리전:**
+
+| 모델 | 지원 리전 |
+|------|----------|
+| `gemini-2.5-flash-lite` | `us-central1`, `europe-west1` |
+| `gemini-2.0-flash-001` | 대부분 리전 |
+| `gemini-1.5-flash` | 대부분 리전 |
 
 ---
 

@@ -16,6 +16,7 @@ type WSMessageType =
   | 'END_SESSION'
   | 'PING'
   | 'SUBMIT_FEEDBACK'
+  | 'TRANSLATE_GRAPH'
   | 'STT_PARTIAL'
   | 'STT_FINAL'
   | 'GRAPH_DELTA'
@@ -24,7 +25,8 @@ type WSMessageType =
   | 'ERROR'
   | 'PONG'
   | 'FEEDBACK_RESULT'
-  | 'REQUEST_FEEDBACK';
+  | 'REQUEST_FEEDBACK'
+  | 'TRANSLATE_RESULT';
 
 interface AudioFormat {
   codec: string;
@@ -81,6 +83,8 @@ export function useWebSocket() {
     addPartialSTT,
     addFinalSTT,
     setFeedbackRequest,
+    setIsTranslating,
+    applyTranslation,
   } = useGraphStore();
 
   // 메시지 핸들러
@@ -139,11 +143,31 @@ export function useWebSocket() {
 
           case 'FEEDBACK_RESULT':
             // 피드백 결과 처리
-            const result = message.payload as { success: boolean; message: string };
-            if (result.success) {
+            const feedbackResult = message.payload as { success: boolean; message: string };
+            if (feedbackResult.success) {
               console.log('Feedback submitted successfully');
             } else {
-              console.error('Feedback submission failed:', result.message);
+              console.error('Feedback submission failed:', feedbackResult.message);
+            }
+            break;
+
+          case 'TRANSLATE_RESULT':
+            // 번역 결과 처리
+            const translateResult = message.payload as {
+              success: boolean;
+              message?: string;
+              entities: Array<{ id: string; label: string; type: string }>;
+              relations: Array<{ source: string; target: string; relation: string }>;
+            };
+            if (translateResult.success) {
+              applyTranslation({
+                entities: translateResult.entities,
+                relations: translateResult.relations,
+              });
+              console.log('Translation applied successfully');
+            } else {
+              setIsTranslating(false);
+              console.error('Translation failed:', translateResult.message);
             }
             break;
 
@@ -159,7 +183,7 @@ export function useWebSocket() {
         console.error('Failed to parse WebSocket message:', error);
       }
     },
-    [setGraphState, applyDelta, addPartialSTT, addFinalSTT, setProcessingStage, setFeedbackRequest]
+    [setGraphState, applyDelta, addPartialSTT, addFinalSTT, setProcessingStage, setFeedbackRequest, setIsTranslating, applyTranslation]
   );
 
   // 연결
@@ -327,6 +351,14 @@ export function useWebSocket() {
     [sendMessage]
   );
 
+  // 그래프 번역 요청
+  const translateGraph = useCallback(
+    (targetLanguage: string) => {
+      sendMessage('TRANSLATE_GRAPH', { targetLanguage });
+    },
+    [sendMessage]
+  );
+
   // 정리
   useEffect(() => {
     return () => {
@@ -342,5 +374,6 @@ export function useWebSocket() {
     startSession,
     endSession,
     submitFeedback,
+    translateGraph,
   };
 }

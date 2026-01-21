@@ -7,15 +7,31 @@
 │                            CLIENT (Electron Desktop App)                      │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐   │
 │  │  Audio Capture  │  │   WebSocket     │  │     React Flow              │   │
-│  │  (System Audio) │──│   Client        │──│     Visualization           │   │
+│  │  (System Audio) │──│   Client        │──│     + Dagre Layout          │   │
 │  └─────────────────┘  └────────┬────────┘  └─────────────────────────────┘   │
 │                                │                                              │
 │  ┌─────────────────────────────┴─────────────────────────────────────────┐   │
-│  │  Zustand Store (Graph State, Transcripts, Feedback)                    │   │
+│  │  Zustand Store                                                         │   │
+│  │  • Graph State (Entities, Relations)                                   │   │
+│  │  • Transcripts                                                         │   │
+│  │  • Translation State                                                   │   │
+│  │  • Export State                                                        │   │
+│  │  • Feedback State                                                      │   │
 │  └───────────────────────────────────────────────────────────────────────┘   │
+│                                                                               │
+│  ┌─────────────────────────────────────────────────────────────────────────┐ │
+│  │  Components                                                              │ │
+│  │  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐ ┌──────────────┐   │ │
+│  │  │ TitleBar     │ │ TranslateDialog│ │ ExportDialog │ │FeedbackDialog│   │ │
+│  │  │ (번역/내보내기)│ │ (7개 언어)    │ │(PNG/PDF/Mmd)│ │ (1-5 ⭐)     │   │ │
+│  │  └──────────────┘ └──────────────┘ └──────────────┘ └──────────────┘   │ │
+│  └─────────────────────────────────────────────────────────────────────────┘ │
 └──────────────────────────────────────────────────────────────────────────────┘
                                      │
                                      │ WebSocket (wss://)
+                                     │ • AUDIO_CHUNK
+                                     │ • GRAPH_DELTA (Streaming)
+                                     │ • TRANSLATE_GRAPH / TRANSLATE_RESULT
                                      ▼
 ┌──────────────────────────────────────────────────────────────────────────────┐
 │                         GOOGLE CLOUD PLATFORM                                 │
@@ -27,7 +43,8 @@
 │  │  │                     Cloud Run (API Server)                        │ │ │
 │  │  │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────────┐   │ │ │
 │  │  │  │ FastAPI     │  │ WebSocket   │  │ Processing Pipeline     │   │ │ │
-│  │  │  │ Server      │──│ Handler     │──│ (STT→NLP→Extraction)    │   │ │ │
+│  │  │  │ Server      │──│ Handler     │──│ (STT→NLP→Streaming      │   │ │ │
+│  │  │  │             │  │             │  │  Extraction)            │   │ │ │
 │  │  │  └─────────────┘  └─────────────┘  └───────────┬─────────────┘   │ │ │
 │  │  │                                                │                  │ │ │
 │  │  │                      ┌─────────────────────────┼──────────────┐   │ │ │
@@ -35,8 +52,8 @@
 │  │  │  ┌───────────────────▼───────┐  ┌─────────────▼───────────┐  │   │ │ │
 │  │  │  │ Cloud Speech-to-Text v2   │  │     Vertex AI           │  │   │ │ │
 │  │  │  │ • Chirp 2 Model           │  │     (Gemini 2.5 Flash)  │  │   │ │ │
-│  │  │  │ • Multi-language          │  │     • Entity Extraction │  │   │ │ │
-│  │  │  │   (KO, EN, JA, ZH)        │  │     • Relation Mining   │  │   │ │ │
+│  │  │  │ • Multi-language          │  │     • Streaming Extract │  │   │ │ │
+│  │  │  │   (KO, EN, JA, ZH)        │  │     • Translation       │  │   │ │ │
 │  │  │  └───────────────────────────┘  └─────────────────────────┘  │   │ │ │
 │  │  │                                                              │   │ │ │
 │  │  └──────────────────────────────────────────────────────────────┘   │ │ │
@@ -84,27 +101,109 @@
 
 ## 데이터 흐름
 
-### 1. 실시간 처리 파이프라인
+### 1. 실시간 스트리밍 처리 파이프라인
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
-│   Audio     │     │    STT      │     │    NLP      │     │ Extraction  │
-│   Capture   │────▶│  (Speech    │────▶│  (Sentence  │────▶│ (Vertex AI  │
-│             │     │   v2)       │     │   Split)    │     │  Gemini)    │
+│   Audio     │     │    STT      │     │    NLP      │     │  Streaming  │
+│   Capture   │────▶│  (Speech    │────▶│  (Sentence  │────▶│  Extraction │
+│             │     │   v2)       │     │   Split)    │     │ (Vertex AI) │
 └─────────────┘     └─────────────┘     └─────────────┘     └──────┬──────┘
                                                                     │
-     ┌──────────────────────────────────────────────────────────────┘
-     │
-     ▼
+                                           ┌────────────────────────┘
+                                           │ (Partial results stream)
+                                           ▼
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
 │   Graph     │     │   Delta     │     │  Client     │
-│   State     │────▶│  Broadcast  │────▶│  Update     │
-│   Update    │     │  (WebSocket)│     │  (React     │
-│             │     │             │     │   Flow)     │
+│   State     │◀───▶│  Broadcast  │────▶│  Update     │
+│   Manager   │     │  (WebSocket)│     │  (React     │
+│   (Redis)   │     │             │     │   Flow)     │
 └─────────────┘     └─────────────┘     └─────────────┘
 ```
 
-### 2. 피드백 루프
+### 2. 스트리밍 추출 상세 흐름
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Streaming Extraction Pipeline                        │
+│                                                                         │
+│  ┌─────────────┐                                                       │
+│  │ Input Text  │                                                       │
+│  │ "김철수는    │                                                       │
+│  │  삼성전자..." │                                                       │
+│  └──────┬──────┘                                                       │
+│         │                                                               │
+│         ▼                                                               │
+│  ┌──────────────────────────────────────────────────────────────────┐ │
+│  │ Vertex AI Gemini (Streaming Response)                             │ │
+│  │                                                                    │ │
+│  │  Chunk 1: {"entities":[{"id":"e1","label":"김철수"...             │ │
+│  │     │                                                              │ │
+│  │     └──▶ [GRAPH_DELTA] Entity: 김철수 (PERSON) ────────▶ Client   │ │
+│  │                                                                    │ │
+│  │  Chunk 2: ...{"id":"e2","label":"삼성전자"...                      │ │
+│  │     │                                                              │ │
+│  │     └──▶ [GRAPH_DELTA] Entity: 삼성전자 (ORG) ─────────▶ Client   │ │
+│  │                                                                    │ │
+│  │  Chunk 3: ...],"relations":[{"source":"e1","target":"e2"...       │ │
+│  │     │                                                              │ │
+│  │     └──▶ [GRAPH_DELTA] Relation: e1 → e2 ──────────────▶ Client   │ │
+│  │                                                                    │ │
+│  └──────────────────────────────────────────────────────────────────┘ │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 3. 번역 흐름
+
+```
+┌─────────────┐     ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
+│   Client    │     │  WebSocket  │     │ Vertex AI   │     │   Client    │
+│  (언어 선택) │────▶│ TRANSLATE_  │────▶│  Gemini     │────▶│  (그래프    │
+│             │     │ GRAPH       │     │ Translation │     │   업데이트)  │
+└─────────────┘     └─────────────┘     └─────────────┘     └─────────────┘
+                          │                    │
+                          │                    │
+                    { targetLanguage:    { entities: [
+                      "en" }               {id: "e1",
+                                            label: "Chulsoo Kim"},
+                                           ...],
+                                          relations: [
+                                           {relation: "works at"},
+                                           ...] }
+```
+
+### 4. 내보내기 흐름
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                        Export Pipeline (Client-side)                    │
+│                                                                         │
+│  ┌────────────────┐                                                    │
+│  │ User selects   │                                                    │
+│  │ export format  │                                                    │
+│  └───────┬────────┘                                                    │
+│          │                                                              │
+│          ├──────────────────┬──────────────────┬──────────────────┐    │
+│          ▼                  ▼                  ▼                  │    │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐          │    │
+│  │     PNG      │   │     PDF      │   │   Mermaid    │          │    │
+│  │              │   │              │   │              │          │    │
+│  │ html-to-image│   │ html-to-image│   │ Graph Data   │          │    │
+│  │ (2x pixel)   │   │ + jsPDF      │   │ → Mermaid    │          │    │
+│  │              │   │              │   │   Syntax     │          │    │
+│  └──────┬───────┘   └──────┬───────┘   └──────┬───────┘          │    │
+│         │                  │                  │                   │    │
+│         ▼                  ▼                  ▼                   │    │
+│  ┌──────────────┐   ┌──────────────┐   ┌──────────────┐          │    │
+│  │  Download    │   │  Download    │   │  Copy to     │          │    │
+│  │  .png file   │   │  .pdf file   │   │  Clipboard   │          │    │
+│  └──────────────┘   └──────────────┘   └──────────────┘          │    │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
+```
+
+### 5. 피드백 루프
 
 ```
 ┌─────────────┐     ┌─────────────┐     ┌─────────────┐
@@ -132,7 +231,8 @@
 | FastAPI | REST API 및 WebSocket 엔드포인트 |
 | STT Worker | 오디오 → 텍스트 변환 (비동기) |
 | NLP Worker | 문장 분리 및 형태소 분석 |
-| Extraction Worker | 엔티티/관계 추출 (비동기) |
+| Streaming Extraction Worker | 스트리밍 엔티티/관계 추출 (비동기) |
+| Translation Handler | 그래프 번역 처리 |
 | Graph Manager | 그래프 상태 관리 및 동기화 |
 
 ### GCP 서비스 역할
@@ -140,10 +240,58 @@
 | 서비스 | 역할 |
 |--------|------|
 | Cloud Speech-to-Text v2 | 다국어 실시간 음성 인식 |
-| Vertex AI (Gemini) | 지식 추출 및 피드백 분석 |
+| Vertex AI (Gemini) | 지식 추출, 번역, 피드백 분석 |
 | Memorystore (Redis) | 세션 상태 및 그래프 캐시 |
 | Cloud Storage | 오디오/그래프 영구 저장 |
 | BigQuery | 분석 데이터 및 피드백 저장 |
+
+### Desktop App 컴포넌트
+
+| 구성 요소 | 설명 |
+|----------|------|
+| TitleBar | 앱 제목, 번역/내보내기 버튼, 윈도우 컨트롤 |
+| KnowledgeGraph | React Flow + Dagre 레이아웃 그래프 |
+| TranslateDialog | 7개 언어 번역 모달 |
+| ExportDialog | PNG/PDF/Mermaid 내보내기 모달 |
+| FeedbackDialog | 만족도 평가 모달 |
+| graphStore | Zustand 상태 관리 + 클러스터 기반 레이아웃 |
+
+## 레이아웃 알고리즘
+
+### Dagre 기반 클러스터 레이아웃
+
+```
+┌────────────────────────────────────────────────────────────────────────┐
+│                    Layout Algorithm                                     │
+│                                                                         │
+│  1. Find Connected Components (BFS)                                    │
+│     ┌─────────┐  ┌─────────┐  ┌───┐  ┌───┐                            │
+│     │ A ─ B   │  │ D ─ E   │  │ G │  │ H │  ← Isolated nodes          │
+│     │  \ /    │  │  \ /    │  └───┘  └───┘                            │
+│     │   C     │  │   F     │                                          │
+│     └─────────┘  └─────────┘                                          │
+│     Component 1   Component 2                                          │
+│                                                                         │
+│  2. Apply Dagre to each component                                      │
+│     - Direction: LR (small) or alternating LR/TB (large)              │
+│     - Ranker: tight-tree (compact)                                    │
+│                                                                         │
+│  3. Arrange components in grid                                         │
+│     ┌─────────────────────────────┬───────────────┐                   │
+│     │     Component 1             │ Component 2   │                   │
+│     │       A ─ B                 │   D ─ E       │                   │
+│     │        \ /                  │    \ /        │                   │
+│     │         C                   │     F         │                   │
+│     ├─────────────────────────────┼───────────────┤                   │
+│     │     Isolated Nodes          │               │                   │
+│     │       G     H               │               │                   │
+│     └─────────────────────────────┴───────────────┘                   │
+│                                                                         │
+│  4. Smooth transition for existing nodes                               │
+│     new_pos = old_pos * 0.3 + calculated_pos * 0.7                    │
+│                                                                         │
+└────────────────────────────────────────────────────────────────────────┘
+```
 
 ## 확장성 고려사항
 
@@ -176,7 +324,9 @@
 |------|--------|
 | WebSocket 지연 시간 | < 100ms |
 | STT 처리 시간 | < 500ms/청크 |
-| 추출 처리 시간 | < 2s/문장 |
+| 스트리밍 추출 첫 응답 | < 1s |
+| 전체 추출 처리 시간 | < 3s/문장 |
+| 번역 처리 시간 | < 2s |
 | 최대 동시 세션 | 100+ |
 | 그래프 노드 한계 | 1000+ |
 
@@ -209,3 +359,30 @@
               └────────────────────────────┘
 ```
 
+## WebSocket 메시지 타입
+
+### 클라이언트 → 서버
+
+| 타입 | 설명 |
+|------|------|
+| `AUDIO_CHUNK` | 오디오 데이터 청크 |
+| `START_SESSION` | 세션 시작 (session_id 포함) |
+| `END_SESSION` | 세션 종료 |
+| `SUBMIT_FEEDBACK` | 피드백 제출 |
+| `TRANSLATE_GRAPH` | 그래프 번역 요청 |
+| `PING` | 연결 확인 |
+
+### 서버 → 클라이언트
+
+| 타입 | 설명 |
+|------|------|
+| `STT_PARTIAL` | 부분 STT 결과 |
+| `STT_FINAL` | 최종 STT 결과 |
+| `GRAPH_DELTA` | 그래프 변경 사항 (스트리밍) |
+| `GRAPH_FULL` | 전체 그래프 상태 |
+| `TRANSLATE_RESULT` | 번역 결과 |
+| `REQUEST_FEEDBACK` | 피드백 요청 |
+| `FEEDBACK_RESULT` | 피드백 처리 결과 |
+| `PROCESSING_STATUS` | 처리 상태 업데이트 |
+| `ERROR` | 에러 메시지 |
+| `PONG` | 연결 확인 응답 |

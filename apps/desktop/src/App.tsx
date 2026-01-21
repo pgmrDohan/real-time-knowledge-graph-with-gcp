@@ -6,6 +6,8 @@ import { KnowledgeGraph } from './components/KnowledgeGraph';
 import { TranscriptPanel } from './components/TranscriptPanel';
 import { StatusBar } from './components/StatusBar';
 import { FeedbackDialog } from './components/FeedbackDialog';
+import { TranslateDialog } from './components/TranslateDialog';
+import { ExportDialog } from './components/ExportDialog';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioCapture } from './hooks/useAudioCapture';
 import { useGraphStore } from './store/graphStore';
@@ -19,6 +21,7 @@ export function App() {
     startSession,
     endSession,
     submitFeedback,
+    translateGraph,
   } = useWebSocket();
   const { isCapturing, startCapture, stopCapture, error: captureError } =
     useAudioCapture(sendAudioChunk);
@@ -30,6 +33,17 @@ export function App() {
   );
   const setFeedbackRequest = useGraphStore((state) => state.setFeedbackRequest);
   const resetGraph = useGraphStore((state) => state.resetGraph);
+  
+  // 번역 관련 상태
+  const showTranslateDialog = useGraphStore((state) => state.showTranslateDialog);
+  const setShowTranslateDialog = useGraphStore((state) => state.setShowTranslateDialog);
+  const isTranslating = useGraphStore((state) => state.isTranslating);
+  const setIsTranslating = useGraphStore((state) => state.setIsTranslating);
+  const graphState = useGraphStore((state) => state.graphState);
+  
+  // 내보내기 관련 상태
+  const showExportDialog = useGraphStore((state) => state.showExportDialog);
+  const setShowExportDialog = useGraphStore((state) => state.setShowExportDialog);
 
   // 컴포넌트 마운트 시 WebSocket 연결
   useEffect(() => {
@@ -61,6 +75,19 @@ export function App() {
   const handleFeedbackClose = () => {
     setShowFeedbackDialog(false);
     setFeedbackRequest(null);
+  };
+
+  const handleTranslate = (targetLanguage: string) => {
+    setIsTranslating(true);
+    translateGraph(targetLanguage);
+  };
+
+  const handleTranslateClose = () => {
+    setShowTranslateDialog(false);
+  };
+
+  const handleExportClose = () => {
+    setShowExportDialog(false);
   };
 
   return (
@@ -101,6 +128,32 @@ export function App() {
         onClose={handleFeedbackClose}
         onSubmit={handleFeedbackSubmit}
         sessionInfo={feedbackRequest}
+      />
+
+      {/* 번역 다이얼로그 */}
+      <TranslateDialog
+        isOpen={showTranslateDialog}
+        onClose={handleTranslateClose}
+        onTranslate={handleTranslate}
+        isTranslating={isTranslating}
+        graphInfo={{
+          entitiesCount: graphState?.entities.length || 0,
+          relationsCount: graphState?.relations.length || 0,
+        }}
+      />
+
+      {/* 내보내기 다이얼로그 */}
+      <ExportDialog
+        isOpen={showExportDialog}
+        onClose={handleExportClose}
+        graphInfo={{
+          entitiesCount: graphState?.entities.length || 0,
+          relationsCount: graphState?.relations.length || 0,
+        }}
+        graphData={graphState ? {
+          entities: graphState.entities.map(e => ({ id: e.id, label: e.label, type: e.type })),
+          relations: graphState.relations.map(r => ({ id: r.id, source: r.source, target: r.target, relation: r.relation })),
+        } : null}
       />
     </div>
   );

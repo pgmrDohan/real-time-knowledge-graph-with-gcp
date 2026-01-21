@@ -54,6 +54,11 @@ interface FeedbackRequest {
   durationSeconds: number;
 }
 
+interface TranslateResult {
+  entities: Array<{ id: string; label: string; type: string }>;
+  relations: Array<{ source: string; target: string; relation: string }>;
+}
+
 interface GraphStoreState {
   // 그래프 상태
   graphState: GraphState | null;
@@ -71,6 +76,13 @@ interface GraphStoreState {
   showFeedbackDialog: boolean;
   feedbackRequest: FeedbackRequest | null;
 
+  // 번역
+  showTranslateDialog: boolean;
+  isTranslating: boolean;
+
+  // 내보내기
+  showExportDialog: boolean;
+
   // 액션
   setGraphState: (state: GraphState) => void;
   applyDelta: (delta: GraphDelta) => void;
@@ -81,6 +93,10 @@ interface GraphStoreState {
   resetGraph: () => void;
   setShowFeedbackDialog: (show: boolean) => void;
   setFeedbackRequest: (request: FeedbackRequest | null) => void;
+  setShowTranslateDialog: (show: boolean) => void;
+  setIsTranslating: (isTranslating: boolean) => void;
+  applyTranslation: (result: TranslateResult) => void;
+  setShowExportDialog: (show: boolean) => void;
 }
 
 /**
@@ -625,6 +641,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   currentPartialText: '',
   showFeedbackDialog: false,
   feedbackRequest: null,
+  showTranslateDialog: false,
+  isTranslating: false,
+  showExportDialog: false,
 
   // 전체 그래프 상태 설정 (Dagre 레이아웃)
   setGraphState: (state) => {
@@ -808,4 +827,65 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       feedbackRequest: request,
       showFeedbackDialog: request !== null,
     }),
+
+  // 번역 다이얼로그 표시
+  setShowTranslateDialog: (show) => set({ showTranslateDialog: show }),
+
+  // 번역 중 상태 설정
+  setIsTranslating: (isTranslating) => set({ isTranslating }),
+
+  // 번역 결과 적용
+  applyTranslation: (result) => {
+    const currentState = get().graphState;
+    if (!currentState) return;
+
+    // 번역된 엔티티 적용
+    const translatedEntities = currentState.entities.map((entity) => {
+      const translated = result.entities.find((e) => e.id === entity.id);
+      return translated
+        ? { ...entity, label: translated.label }
+        : entity;
+    });
+
+    // 번역된 관계 적용
+    const translatedRelations = currentState.relations.map((relation) => {
+      const translated = result.relations.find(
+        (r) => r.source === relation.source && r.target === relation.target
+      );
+      return translated
+        ? { ...relation, relation: translated.relation }
+        : relation;
+    });
+
+    // 기존 노드 위치 유지
+    const existingPositions = new Map(
+      get().nodes.map((n) => [n.id, n.position])
+    );
+
+    // 새 상태 적용
+    const newState = {
+      ...currentState,
+      entities: translatedEntities,
+      relations: translatedRelations,
+    };
+
+    // 노드/엣지 재생성 (위치 유지)
+    const nodes = translatedEntities.map((entity) => {
+      const pos = existingPositions.get(entity.id) || { x: 400, y: 300 };
+      return entityToNode(entity, pos);
+    });
+    const edges = translatedRelations.map((relation) => relationToEdge(relation));
+    const styledEdges = styleEdges(nodes, edges);
+
+    set({
+      graphState: newState,
+      nodes,
+      edges: styledEdges,
+      isTranslating: false,
+      showTranslateDialog: false,
+    });
+  },
+
+  // 내보내기 다이얼로그 표시
+  setShowExportDialog: (show) => set({ showExportDialog: show }),
 }));

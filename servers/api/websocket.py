@@ -651,6 +651,9 @@ class WebSocketHandler:
                 case WSMessageType.SUBMIT_FEEDBACK:
                     await self._handle_feedback(websocket, session, payload)
 
+                case WSMessageType.TRANSLATE_GRAPH:
+                    await self._handle_translate_graph(websocket, session, payload)
+
                 case WSMessageType.PING:
                     await self._send_message(websocket, WSMessageType.PONG, {})
 
@@ -748,6 +751,82 @@ class WebSocketHandler:
                 websocket,
                 WSMessageType.FEEDBACK_RESULT,
                 result_payload.model_dump(by_alias=True),
+            )
+
+    async def _handle_translate_graph(
+        self,
+        websocket: WebSocket,
+        session: SessionState,
+        payload: dict[str, Any],
+    ) -> None:
+        """그래프 번역 처리"""
+        from gcp.vertex_ai import get_vertex_client
+        
+        try:
+            target_language = payload.get("targetLanguage", "en")
+            
+            logger.info(
+                "translate_graph_requested",
+                session_id=session.session_id,
+                target_language=target_language,
+            )
+            
+            # 현재 그래프 상태 조회
+            graph_manager = await get_graph_manager()
+            state = await graph_manager.get_state(session.session_id)
+            
+            if not state.entities:
+                await self._send_message(
+                    websocket,
+                    WSMessageType.TRANSLATE_RESULT,
+                    {
+                        "success": False,
+                        "message": "번역할 그래프가 없습니다.",
+                        "entities": [],
+                        "relations": [],
+                    },
+                )
+                return
+            
+            # Vertex AI로 번역
+            vertex_client = await get_vertex_client()
+            translated = await vertex_client.translate_graph(
+                entities=state.entities,
+                relations=state.relations,
+                target_language=target_language,
+            )
+            
+            # 번역 결과 전송
+            await self._send_message(
+                websocket,
+                WSMessageType.TRANSLATE_RESULT,
+                {
+                    "success": True,
+                    "targetLanguage": target_language,
+                    "entities": translated["entities"],
+                    "relations": translated["relations"],
+                },
+            )
+            
+            logger.info(
+                "translate_graph_completed",
+                session_id=session.session_id,
+                target_language=target_language,
+                entities_count=len(translated["entities"]),
+                relations_count=len(translated["relations"]),
+            )
+            
+        except Exception as e:
+            logger.error("translate_graph_error", error=str(e))
+            await self._send_message(
+                websocket,
+                WSMessageType.TRANSLATE_RESULT,
+                {
+                    "success": False,
+                    "message": f"번역 실패: {str(e)}",
+                    "entities": [],
+                    "relations": [],
+                },
             )
 
     async def _send_message(

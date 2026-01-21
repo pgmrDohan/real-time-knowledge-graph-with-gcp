@@ -39,6 +39,7 @@ class WSMessageType(str, Enum):
     END_SESSION = "END_SESSION"
     PING = "PING"
     SUBMIT_FEEDBACK = "SUBMIT_FEEDBACK"  # 피드백 제출
+    TRANSLATE_GRAPH = "TRANSLATE_GRAPH"  # 그래프 번역 요청
     
     # 서버 → 클라이언트
     STT_PARTIAL = "STT_PARTIAL"
@@ -50,6 +51,7 @@ class WSMessageType(str, Enum):
     PONG = "PONG"
     FEEDBACK_RESULT = "FEEDBACK_RESULT"  # 피드백 결과
     REQUEST_FEEDBACK = "REQUEST_FEEDBACK"  # 피드백 요청
+    TRANSLATE_RESULT = "TRANSLATE_RESULT"  # 번역 결과
 
 
 class ProcessingStage(str, Enum):

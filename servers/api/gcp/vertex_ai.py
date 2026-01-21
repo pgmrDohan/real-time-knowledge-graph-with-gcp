@@ -41,6 +41,7 @@ PERSON, ORGANIZATION, LOCATION, CONCEPT, EVENT, PRODUCT, TECHNOLOGY, DATE, METRI
 - Extract 2-3 relations between entities (IMPORTANT!)
 - Relations should be short verb phrases (e.g., "works at", "is part of", "created")
 - Reuse existing entity IDs when the same entity is mentioned
+- Match output language to input: Korean input → Korean labels/relations, English → English, etc.
 {context}
 ## Examples
 
@@ -774,6 +775,122 @@ Keep the response under 200 words.
         )
         
         return ExtractionResult(entities=entities, relations=relations)
+
+    async def translate_graph(
+        self,
+        entities: list[GraphEntity],
+        relations: list[GraphRelation],
+        target_language: str,
+    ) -> dict[str, Any]:
+        """
+        그래프의 엔티티 라벨과 관계 라벨을 지정된 언어로 번역
+        
+        Args:
+            entities: 번역할 엔티티 목록
+            relations: 번역할 관계 목록
+            target_language: 목표 언어 (ko, en, ja, zh 등)
+        
+        Returns:
+            번역된 엔티티와 관계 딕셔너리
+        """
+        if not entities:
+            return {"entities": [], "relations": []}
+        
+        # 언어 코드 → 언어 이름 매핑
+        language_names = {
+            "ko": "Korean",
+            "en": "English", 
+            "ja": "Japanese",
+            "zh": "Chinese",
+            "es": "Spanish",
+            "fr": "French",
+            "de": "German",
+        }
+        target_lang_name = language_names.get(target_language, target_language)
+        
+        # 번역할 데이터 준비
+        entity_data = [{"id": e.id, "label": e.label, "type": e.type} for e in entities]
+        relation_data = [{"source": r.source, "target": r.target, "relation": r.relation} for r in relations]
+        
+        prompt = f"""Translate all entity labels and relation labels to {target_lang_name}.
+Keep the structure exactly the same, only translate the text content.
+- Keep entity IDs unchanged
+- Keep entity types unchanged  
+- Only translate "label" values in entities
+- Only translate "relation" values in relations
+- Maintain the same meaning and nuance
+
+## Input
+```json
+{{"entities": {json.dumps(entity_data, ensure_ascii=False)}, "relations": {json.dumps(relation_data, ensure_ascii=False)}}}
+```
+
+## Output (JSON only, translated to {target_lang_name})
+```json
+"""
+        
+        try:
+            response = await asyncio.to_thread(
+                self.model.generate_content,
+                prompt,
+                generation_config=GenerationConfig(
+                    temperature=0.1,  # 일관된 번역을 위해 낮은 온도
+                    max_output_tokens=2048,
+                ),
+            )
+            
+            content = response.text.strip()
+            logger.debug("translate_response", content_preview=content[:500])
+            
+            # JSON 파싱
+            json_match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", content, re.DOTALL)
+            if json_match:
+                json_str = json_match.group(1)
+            else:
+                json_match = re.search(r"\{.*\}", content, re.DOTALL)
+                if json_match:
+                    json_str = json_match.group(0)
+                else:
+                    raise ValueError("JSON not found in translation response")
+            
+            data = json.loads(json_str)
+            
+            # 번역된 엔티티 매핑 생성 (id -> translated label)
+            translated_entities = []
+            for te in data.get("entities", []):
+                # 원본 엔티티에서 타입 가져오기
+                original = next((e for e in entities if e.id == te.get("id")), None)
+                if original:
+                    translated_entities.append({
+                        "id": original.id,
+                        "label": te.get("label", original.label),
+                        "type": original.type,
+                    })
+            
+            # 번역된 관계
+            translated_relations = []
+            for tr in data.get("relations", []):
+                translated_relations.append({
+                    "source": tr.get("source", ""),
+                    "target": tr.get("target", ""),
+                    "relation": tr.get("relation", ""),
+                })
+            
+            logger.info(
+                "translation_completed",
+                target_language=target_language,
+                entities_count=len(translated_entities),
+                relations_count=len(translated_relations),
+            )
+            
+            return {
+                "entities": translated_entities,
+                "relations": translated_relations,
+            }
+            
+        except Exception as e:
+            logger.error("translation_failed", error=str(e), target_language=target_language)
+            raise
 
 
 # 싱글톤 인스턴스
