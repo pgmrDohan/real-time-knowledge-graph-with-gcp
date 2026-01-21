@@ -37,8 +37,12 @@ const defaultEdgeOptions: DefaultEdgeOptions = {
   style: { stroke: '#4a5568', strokeWidth: 1 },
 };
 
-// fitView 옵션
-const fitViewOptions = { padding: 0.2 };
+// fitView 옵션 (무한 캔버스용)
+const fitViewOptions = { 
+  padding: 0.3,
+  minZoom: 0.1,
+  maxZoom: 1.5,
+};
 
 // 미니맵 노드 색상 추출 함수
 const getNodeColor = (node: Node): string => {
@@ -103,10 +107,18 @@ export function KnowledgeGraph() {
           nodeTypes={nodeTypes}
           fitView
           fitViewOptions={fitViewOptions}
-          minZoom={0.1}
+          minZoom={0.05}
           maxZoom={2}
           defaultEdgeOptions={defaultEdgeOptions}
           proOptions={proOptions}
+          // 무한 캔버스 설정
+          panOnScroll
+          selectionOnDrag
+          panOnDrag={[1, 2]}  // 왼쪽/중간 버튼으로 패닝
+          zoomOnDoubleClick={false}
+          // 노드 드래그 시 그리드 스냅
+          snapToGrid
+          snapGrid={[20, 20]}
         >
           {/* 배경 그리드 */}
           <Background

@@ -1,9 +1,10 @@
 /**
  * Zustand 기반 그래프 상태 관리
- * 노드 겹침 방지 알고리즘 포함
+ * Dagre 기반 자동 레이아웃 + 무한 캔버스
  */
 
 import { create } from 'zustand';
+import dagre from 'dagre';
 import type { Node, Edge } from 'reactflow';
 import type {
   GraphState,
@@ -35,8 +36,8 @@ const ENTITY_COLORS: Record<string, string> = {
 // 노드 크기 상수
 const NODE_WIDTH = 180;
 const NODE_HEIGHT = 80;
-const NODE_MARGIN = 40;
-const REPULSION_FORCE = 100;
+const NODE_SPACING_X = 250;  // 노드 간 가로 간격
+const NODE_SPACING_Y = 120;  // 노드 간 세로 간격
 
 interface TranscriptEntry {
   id: string;
@@ -83,136 +84,237 @@ interface GraphStoreState {
 }
 
 /**
- * Force-directed 레이아웃 알고리즘
- * 노드 간 겹침을 방지하고 관계 기반으로 배치
+ * Dagre 기반 자동 레이아웃 알고리즘
+ * - 연결된 노드를 가까이 배치
+ * - 노드 간 겹침 방지
+ * - 무한 캔버스 지원 (경계 제한 없음)
  */
-function calculateForceDirectedLayout(
+function calculateDagreLayout(
   entities: GraphEntity[],
   relations: GraphRelation[],
-  existingPositions: Map<string, { x: number; y: number }>
+  existingPositions: Map<string, { x: number; y: number }>,
+  direction: 'TB' | 'LR' = 'LR'  // TB: 위→아래, LR: 왼쪽→오른쪽
 ): Map<string, { x: number; y: number }> {
   const positions = new Map<string, { x: number; y: number }>();
+  
+  if (entities.length === 0) {
+    return positions;
+  }
 
-  // 기존 위치 복사 또는 초기 위치 생성
-  entities.forEach((entity, index) => {
-    const existing = existingPositions.get(entity.id);
-    if (existing) {
-      positions.set(entity.id, { ...existing });
-    } else {
-      // 새 노드는 나선형으로 배치
-      const angle = index * 0.5;
-      const radius = 150 + index * 30;
-      positions.set(entity.id, {
-        x: 400 + Math.cos(angle) * radius,
-        y: 300 + Math.sin(angle) * radius,
-      });
+  // Dagre 그래프 생성
+  const g = new dagre.graphlib.Graph();
+  g.setGraph({
+    rankdir: direction,
+    nodesep: NODE_SPACING_X,  // 같은 rank 내 노드 간 간격
+    ranksep: NODE_SPACING_Y,  // rank 간 간격
+    marginx: 50,
+    marginy: 50,
+  });
+  g.setDefaultEdgeLabel(() => ({}));
+
+  // 노드 추가
+  entities.forEach((entity) => {
+    g.setNode(entity.id, {
+      width: NODE_WIDTH,
+      height: NODE_HEIGHT,
+      label: entity.label,
+    });
+  });
+
+  // 엣지 추가 (관계)
+  relations.forEach((relation) => {
+    // source와 target이 모두 존재하는지 확인
+    if (g.hasNode(relation.source) && g.hasNode(relation.target)) {
+      g.setEdge(relation.source, relation.target);
     }
   });
 
-  // Force-directed 시뮬레이션 (간소화된 버전)
-  const iterations = 50;
-  const cooling = 0.95;
-  let temperature = 100;
+  // 레이아웃 계산
+  dagre.layout(g);
 
-  for (let iter = 0; iter < iterations; iter++) {
-    const forces = new Map<string, { fx: number; fy: number }>();
-
-    // 모든 노드에 대해 초기 힘 설정
-    entities.forEach((entity) => {
-      forces.set(entity.id, { fx: 0, fy: 0 });
-    });
-
-    // 1. 노드 간 반발력 (겹침 방지)
-    for (let i = 0; i < entities.length; i++) {
-      for (let j = i + 1; j < entities.length; j++) {
-        const pos1 = positions.get(entities[i].id)!;
-        const pos2 = positions.get(entities[j].id)!;
-
-        const dx = pos2.x - pos1.x;
-        const dy = pos2.y - pos1.y;
-        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
-
-        // 최소 거리 (노드 크기 + 마진)
-        const minDistance = NODE_WIDTH + NODE_MARGIN;
-
-        if (distance < minDistance) {
-          const force = (REPULSION_FORCE * (minDistance - distance)) / distance;
-          const fx = (dx / distance) * force;
-          const fy = (dy / distance) * force;
-
-          const f1 = forces.get(entities[i].id)!;
-          const f2 = forces.get(entities[j].id)!;
-
-          f1.fx -= fx;
-          f1.fy -= fy;
-          f2.fx += fx;
-          f2.fy += fy;
-        }
+  // 결과 추출
+  g.nodes().forEach((nodeId) => {
+    const node = g.node(nodeId);
+    if (node) {
+      // 기존 위치가 있고, 해당 노드의 연결이 변하지 않았으면 기존 위치 유지 고려
+      const existing = existingPositions.get(nodeId);
+      
+      // 새 노드이거나 관계가 변경된 노드는 새 위치 사용
+      // 기존 노드는 부드럽게 이동 (기존 위치와 새 위치의 중간)
+      if (existing) {
+        // 기존 위치에서 새 위치로 부드럽게 이동 (80% 새 위치)
+        positions.set(nodeId, {
+          x: existing.x * 0.2 + node.x * 0.8,
+          y: existing.y * 0.2 + node.y * 0.8,
+        });
+      } else {
+        positions.set(nodeId, { x: node.x, y: node.y });
       }
     }
+  });
 
-    // 2. 연결된 노드 간 인력 (관계 기반)
-    relations.forEach((relation) => {
-      const sourcePos = positions.get(relation.source);
-      const targetPos = positions.get(relation.target);
+  // 연결되지 않은 노드들 처리 (고립 노드)
+  const connectedNodes = new Set<string>();
+  relations.forEach((r) => {
+    connectedNodes.add(r.source);
+    connectedNodes.add(r.target);
+  });
 
-      if (sourcePos && targetPos) {
-        const dx = targetPos.x - sourcePos.x;
-        const dy = targetPos.y - sourcePos.y;
-        const distance = Math.sqrt(dx * dx + dy * dy) || 1;
+  // 고립 노드들은 별도 영역에 배치
+  const isolatedNodes = entities.filter((e) => !connectedNodes.has(e.id));
+  if (isolatedNodes.length > 0) {
+    // 기존 노드들의 최대 Y 위치 찾기
+    let maxY = 0;
+    positions.forEach((pos) => {
+      maxY = Math.max(maxY, pos.y);
+    });
 
-        // 이상적인 거리
-        const idealDistance = NODE_WIDTH * 2;
-        const force = (distance - idealDistance) * 0.1;
-
-        const fx = (dx / distance) * force;
-        const fy = (dy / distance) * force;
-
-        const sourceForce = forces.get(relation.source);
-        const targetForce = forces.get(relation.target);
-
-        if (sourceForce && targetForce) {
-          sourceForce.fx += fx;
-          sourceForce.fy += fy;
-          targetForce.fx -= fx;
-          targetForce.fy -= fy;
-        }
+    // 고립 노드들을 그리드 형태로 배치
+    const cols = Math.ceil(Math.sqrt(isolatedNodes.length));
+    isolatedNodes.forEach((entity, index) => {
+      const existing = existingPositions.get(entity.id);
+      if (existing) {
+        positions.set(entity.id, existing);
+      } else {
+        const row = Math.floor(index / cols);
+        const col = index % cols;
+        positions.set(entity.id, {
+          x: 100 + col * NODE_SPACING_X,
+          y: maxY + NODE_SPACING_Y * 2 + row * NODE_SPACING_Y,
+        });
       }
     });
-
-    // 3. 힘 적용
-    entities.forEach((entity) => {
-      const pos = positions.get(entity.id)!;
-      const force = forces.get(entity.id)!;
-
-      // 온도에 따라 이동량 제한
-      const maxMove = temperature;
-      const moveX = Math.max(-maxMove, Math.min(maxMove, force.fx));
-      const moveY = Math.max(-maxMove, Math.min(maxMove, force.fy));
-
-      pos.x += moveX;
-      pos.y += moveY;
-
-      // 경계 제한
-      pos.x = Math.max(100, Math.min(1200, pos.x));
-      pos.y = Math.max(100, Math.min(800, pos.y));
-    });
-
-    temperature *= cooling;
   }
 
   return positions;
 }
 
 /**
- * 엣지 경로 최적화 (겹침 방지)
- * 직선 경로가 다른 노드와 겹치는 경우 곡선으로 변경
+ * 증분 레이아웃: 새 노드만 위치 계산
+ * 기존 노드 위치는 최대한 유지하면서 새 노드만 적절히 배치
  */
-function optimizeEdgePaths(
+function calculateIncrementalLayout(
+  entities: GraphEntity[],
+  relations: GraphRelation[],
+  existingPositions: Map<string, { x: number; y: number }>,
+  newEntityIds: Set<string>
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+
+  // 기존 노드 위치 복사
+  entities.forEach((entity) => {
+    const existing = existingPositions.get(entity.id);
+    if (existing && !newEntityIds.has(entity.id)) {
+      positions.set(entity.id, { ...existing });
+    }
+  });
+
+  // 새 노드 위치 계산
+  const newEntities = entities.filter((e) => newEntityIds.has(e.id));
+  
+  newEntities.forEach((newEntity) => {
+    // 연결된 기존 노드 찾기
+    const connectedRelations = relations.filter(
+      (r) => r.source === newEntity.id || r.target === newEntity.id
+    );
+    
+    if (connectedRelations.length > 0) {
+      // 연결된 노드들의 평균 위치 근처에 배치
+      let sumX = 0, sumY = 0, count = 0;
+      
+      connectedRelations.forEach((rel) => {
+        const otherId = rel.source === newEntity.id ? rel.target : rel.source;
+        const otherPos = positions.get(otherId);
+        if (otherPos) {
+          sumX += otherPos.x;
+          sumY += otherPos.y;
+          count++;
+        }
+      });
+      
+      if (count > 0) {
+        // 평균 위치에서 약간 오프셋
+        const avgX = sumX / count;
+        const avgY = sumY / count;
+        const angle = Math.random() * Math.PI * 2;
+        const distance = NODE_SPACING_X * 0.8;
+        
+        positions.set(newEntity.id, {
+          x: avgX + Math.cos(angle) * distance,
+          y: avgY + Math.sin(angle) * distance,
+        });
+      } else {
+        // 연결된 노드가 아직 위치가 없으면 기본 위치
+        positions.set(newEntity.id, { x: 400, y: 300 });
+      }
+    } else {
+      // 연결이 없는 새 노드는 우측 하단에 배치
+      let maxX = 0, maxY = 0;
+      positions.forEach((pos) => {
+        maxX = Math.max(maxX, pos.x);
+        maxY = Math.max(maxY, pos.y);
+      });
+      
+      positions.set(newEntity.id, {
+        x: maxX + NODE_SPACING_X,
+        y: maxY > 0 ? maxY : 300,
+      });
+    }
+  });
+
+  // 충돌 해결: 새 노드가 기존 노드와 겹치면 이동
+  newEntities.forEach((newEntity) => {
+    const newPos = positions.get(newEntity.id)!;
+    let attempts = 0;
+    const maxAttempts = 10;
+    
+    while (attempts < maxAttempts) {
+      let hasCollision = false;
+      
+      for (const [otherId, otherPos] of positions) {
+        if (otherId === newEntity.id) continue;
+        
+        const dx = Math.abs(newPos.x - otherPos.x);
+        const dy = Math.abs(newPos.y - otherPos.y);
+        
+        if (dx < NODE_WIDTH + 20 && dy < NODE_HEIGHT + 20) {
+          hasCollision = true;
+          // 충돌 시 이동
+          const angle = Math.atan2(newPos.y - otherPos.y, newPos.x - otherPos.x);
+          newPos.x += Math.cos(angle) * 50;
+          newPos.y += Math.sin(angle) * 50;
+          break;
+        }
+      }
+      
+      if (!hasCollision) break;
+      attempts++;
+    }
+  });
+
+  return positions;
+}
+
+/**
+ * 엣지 스타일 설정
+ * - 연결된 노드 간 거리에 따라 스타일 조정
+ * - 겹치는 엣지는 곡선으로 처리
+ */
+function styleEdges(
   nodes: Node<RFNodeData>[],
   edges: Edge<RFEdgeData>[]
 ): Edge<RFEdgeData>[] {
   const nodePositions = new Map(nodes.map((n) => [n.id, n.position]));
+
+  // 같은 source-target 쌍의 엣지 그룹화 (양방향 포함)
+  const edgePairs = new Map<string, Edge<RFEdgeData>[]>();
+  edges.forEach((edge) => {
+    const key = [edge.source, edge.target].sort().join('-');
+    if (!edgePairs.has(key)) {
+      edgePairs.set(key, []);
+    }
+    edgePairs.get(key)!.push(edge);
+  });
 
   return edges.map((edge) => {
     const sourcePos = nodePositions.get(edge.source);
@@ -220,57 +322,28 @@ function optimizeEdgePaths(
 
     if (!sourcePos || !targetPos) return edge;
 
-    // 다른 노드와의 충돌 검사
-    let hasCollision = false;
-    for (const node of nodes) {
-      if (node.id === edge.source || node.id === edge.target) continue;
+    // 거리 계산
+    const dx = targetPos.x - sourcePos.x;
+    const dy = targetPos.y - sourcePos.y;
+    const distance = Math.sqrt(dx * dx + dy * dy);
 
-      const nodePos = node.position;
+    // 같은 노드 쌍 사이에 여러 엣지가 있는지 확인
+    const pairKey = [edge.source, edge.target].sort().join('-');
+    const pairEdges = edgePairs.get(pairKey) || [];
+    const hasMultipleEdges = pairEdges.length > 1;
 
-      // 선분과 사각형 충돌 검사 (간소화)
-      if (lineIntersectsRect(sourcePos, targetPos, nodePos, NODE_WIDTH, NODE_HEIGHT)) {
-        hasCollision = true;
-        break;
-      }
-    }
+    // 먼 거리 또는 다중 엣지인 경우 곡선 사용
+    const useCurve = distance > NODE_SPACING_X * 2 || hasMultipleEdges;
 
-    if (hasCollision) {
-      // 충돌 시 곡선 엣지 사용
-      return {
-        ...edge,
-        type: 'smoothstep',
-        style: {
-          ...edge.style,
-          strokeDasharray: edge.data?.isNew ? undefined : '5,5',
-        },
-      };
-    }
-
-    return edge;
+    return {
+      ...edge,
+      type: useCurve ? 'smoothstep' : 'default',
+      style: {
+        ...edge.style,
+        strokeWidth: edge.data?.isNew ? 2 : 1,
+      },
+    };
   });
-}
-
-/**
- * 선분과 사각형 충돌 검사
- */
-function lineIntersectsRect(
-  p1: { x: number; y: number },
-  p2: { x: number; y: number },
-  rectPos: { x: number; y: number },
-  width: number,
-  height: number
-): boolean {
-  // 사각형 경계
-  const left = rectPos.x - width / 2 - 20;
-  const right = rectPos.x + width / 2 + 20;
-  const top = rectPos.y - height / 2 - 10;
-  const bottom = rectPos.y + height / 2 + 10;
-
-  // 선분의 중점이 사각형 내부에 있는지 확인
-  const midX = (p1.x + p2.x) / 2;
-  const midY = (p1.y + p2.y) / 2;
-
-  return midX >= left && midX <= right && midY >= top && midY <= bottom;
 }
 
 // 엔티티를 React Flow 노드로 변환
@@ -334,21 +407,22 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   showFeedbackDialog: false,
   feedbackRequest: null,
 
-  // 전체 그래프 상태 설정
+  // 전체 그래프 상태 설정 (Dagre 레이아웃)
   setGraphState: (state) => {
-    const positions = calculateForceDirectedLayout(
+    const positions = calculateDagreLayout(
       state.entities,
       state.relations,
       new Map()
     );
 
-    const nodes = state.entities.map((entity) =>
-      entityToNode(entity, positions.get(entity.id)!)
-    );
+    const nodes = state.entities.map((entity) => {
+      const pos = positions.get(entity.id) || { x: 400, y: 300 };
+      return entityToNode(entity, pos);
+    });
     const edges = state.relations.map((relation) => relationToEdge(relation));
-    const optimizedEdges = optimizeEdgePaths(nodes, edges);
+    const styledEdges = styleEdges(nodes, edges);
 
-    set({ graphState: state, nodes, edges: optimizedEdges });
+    set({ graphState: state, nodes, edges: styledEdges });
   },
 
   // 델타 적용
@@ -393,20 +467,39 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentNodes.map((n) => [n.id, n.position])
     );
 
-    // Force-directed 레이아웃 계산
-    const positions = calculateForceDirectedLayout(
-      newEntities,
-      newRelations,
-      existingPositions
-    );
-
     const addedIds = new Set(delta.addedEntities.map((e) => e.id));
     const updatedIds = new Set(delta.updatedEntities.map((e) => e.id));
+
+    // 새 엔티티가 있으면 증분 레이아웃, 아니면 기존 위치 유지
+    let positions: Map<string, { x: number; y: number }>;
+    
+    if (addedIds.size > 0 || delta.addedRelations.length > 0) {
+      // 새 노드/관계가 있으면 레이아웃 재계산
+      if (addedIds.size > 5 || newEntities.length > 20) {
+        // 많은 변경이 있으면 전체 Dagre 레이아웃
+        positions = calculateDagreLayout(
+          newEntities,
+          newRelations,
+          existingPositions
+        );
+      } else {
+        // 적은 변경이면 증분 레이아웃 (기존 위치 최대한 유지)
+        positions = calculateIncrementalLayout(
+          newEntities,
+          newRelations,
+          existingPositions,
+          addedIds
+        );
+      }
+    } else {
+      // 변경 없으면 기존 위치 유지
+      positions = existingPositions;
+    }
 
     const nodes = newEntities.map((entity) => {
       const isNew = addedIds.has(entity.id);
       const isUpdated = updatedIds.has(entity.id);
-      const position = positions.get(entity.id)!;
+      const position = positions.get(entity.id) || { x: 400, y: 300 };
 
       return {
         ...entityToNode(entity, position, isNew),
@@ -422,9 +515,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     const edges = newRelations.map((relation) =>
       relationToEdge(relation, addedRelationIds.has(relation.id))
     );
-    const optimizedEdges = optimizeEdgePaths(nodes, edges);
+    const styledEdges = styleEdges(nodes, edges);
 
-    set({ graphState: newState, nodes, edges: optimizedEdges });
+    set({ graphState: newState, nodes, edges: styledEdges });
 
     // 애니메이션 후 isNew 플래그 제거
     setTimeout(() => {
