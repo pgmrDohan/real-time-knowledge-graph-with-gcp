@@ -808,8 +808,8 @@ Keep the response under 200 words.
         }
         target_lang_name = language_names.get(target_language, target_language)
         
-        # 번역할 데이터 준비
-        entity_data = [{"id": e.id, "label": e.label, "type": e.type} for e in entities]
+        # 번역할 데이터 준비 (enum을 string으로 변환)
+        entity_data = [{"id": e.id, "label": e.label, "type": e.type.value if hasattr(e.type, 'value') else str(e.type)} for e in entities]
         relation_data = [{"source": r.source, "target": r.target, "relation": r.relation} for r in relations]
         
         prompt = f"""Translate all entity labels and relation labels to {target_lang_name}.
@@ -829,9 +829,12 @@ Keep the structure exactly the same, only translate the text content.
 ```json
 """
         
+        if not self._model:
+            await self.initialize()
+        
         try:
             response = await asyncio.to_thread(
-                self.model.generate_content,
+                self._model.generate_content,
                 prompt,
                 generation_config=GenerationConfig(
                     temperature=0.1,  # 일관된 번역을 위해 낮은 온도
@@ -864,7 +867,7 @@ Keep the structure exactly the same, only translate the text content.
                     translated_entities.append({
                         "id": original.id,
                         "label": te.get("label", original.label),
-                        "type": original.type,
+                        "type": original.type.value if hasattr(original.type, 'value') else str(original.type),
                     })
             
             # 번역된 관계
