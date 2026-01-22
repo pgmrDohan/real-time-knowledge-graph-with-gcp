@@ -75,6 +75,10 @@ export function useWebSocket() {
   // 세션 활성 상태 추적 (녹음 중인지)
   const isSessionActiveRef = useRef(false);
   const lastLanguageCodesRef = useRef<string[] | undefined>(undefined);
+  
+  // 연결 상태 모니터링
+  const lastPongTimeRef = useRef<number>(Date.now());
+  const connectionHealthCheckRef = useRef<NodeJS.Timeout | undefined>(undefined);
 
   const {
     setGraphState,
@@ -176,7 +180,8 @@ export function useWebSocket() {
             break;
 
           case 'PONG':
-            // 연결 유지 확인
+            // 연결 유지 확인 - 마지막 응답 시간 업데이트
+            lastPongTimeRef.current = Date.now();
             break;
         }
       } catch (error) {
@@ -199,7 +204,10 @@ export function useWebSocket() {
       console.log('WebSocket connected');
       setIsConnected(true);
 
-      // Ping 인터벌 시작
+      // 마지막 PONG 시간 초기화
+      lastPongTimeRef.current = Date.now();
+      
+      // Ping 인터벌 시작 - 15초로 단축 (Cloud Run WebSocket 안정성)
       pingIntervalRef.current = setInterval(() => {
         if (ws.readyState === WebSocket.OPEN) {
           ws.send(
@@ -210,8 +218,23 @@ export function useWebSocket() {
               messageId: crypto.randomUUID(),
             })
           );
+        } else {
+          // 연결이 끊어진 상태면 재연결 시도
+          console.warn('[WS] Ping failed - connection not open, attempting reconnect');
+          clearInterval(pingIntervalRef.current);
+          wsRef.current = null;
+          connect();
         }
-      }, 30000);
+      }, 15000); // 30초 → 15초로 단축
+      
+      // 연결 상태 모니터링 - PONG 응답 체크 (45초 이상 응답 없으면 재연결)
+      connectionHealthCheckRef.current = setInterval(() => {
+        const timeSinceLastPong = Date.now() - lastPongTimeRef.current;
+        if (timeSinceLastPong > 45000) {  // 45초 이상 PONG 없음
+          console.warn('[WS] No PONG received for 45s, reconnecting...');
+          ws.close();
+        }
+      }, 10000);  // 10초마다 체크
       
       // 세션이 활성화 상태였으면 자동으로 재시작 (재연결 시)
       if (isSessionActiveRef.current) {
@@ -238,12 +261,23 @@ export function useWebSocket() {
 
       if (pingIntervalRef.current) {
         clearInterval(pingIntervalRef.current);
+        pingIntervalRef.current = undefined;
+      }
+      
+      if (connectionHealthCheckRef.current) {
+        clearInterval(connectionHealthCheckRef.current);
+        connectionHealthCheckRef.current = undefined;
       }
 
-      // 자동 재연결
+      // 자동 재연결 - 지수 백오프 적용 (최대 30초)
+      const baseDelay = 1000;
+      const maxDelay = 30000;
+      const delay = Math.min(baseDelay * Math.pow(2, Math.random()), maxDelay);
+      
       reconnectTimeoutRef.current = setTimeout(() => {
+        console.log('[WS] Attempting reconnection...');
         connect();
-      }, 3000);
+      }, delay);
     };
 
     ws.onerror = (error) => {
@@ -257,9 +291,15 @@ export function useWebSocket() {
   const disconnect = useCallback(() => {
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
+      reconnectTimeoutRef.current = undefined;
     }
     if (pingIntervalRef.current) {
       clearInterval(pingIntervalRef.current);
+      pingIntervalRef.current = undefined;
+    }
+    if (connectionHealthCheckRef.current) {
+      clearInterval(connectionHealthCheckRef.current);
+      connectionHealthCheckRef.current = undefined;
     }
     if (wsRef.current) {
       wsRef.current.close();

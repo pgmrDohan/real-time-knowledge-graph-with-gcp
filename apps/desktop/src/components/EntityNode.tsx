@@ -23,7 +23,7 @@ import {
 import type { RFNodeData, EntityType } from '@rkg/shared-types';
 
 // 엔티티 타입별 아이콘
-const ENTITY_ICONS: Record<string, React.ComponentType<{ size?: number }>> = {
+const ENTITY_ICONS: Record<string, React.ComponentType<{ size?: number; className?: string }>> = {
   PERSON: User,
   ORGANIZATION: Building2,
   LOCATION: MapPin,

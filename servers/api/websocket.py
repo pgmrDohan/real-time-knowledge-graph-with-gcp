@@ -48,6 +48,10 @@ logger = get_logger(__name__)
 
 class SessionState:
     """WebSocket 세션 상태"""
+    
+    # 메모리 제한 상수
+    MAX_ACCUMULATED_AUDIO_SIZE = 50 * 1024 * 1024  # 50MB 최대
+    MAX_AUDIO_DURATION_MS = 10 * 60 * 1000  # 10분 최대
 
     def __init__(self, session_id: str) -> None:
         self.session_id = session_id
@@ -58,12 +62,55 @@ class SessionState:
         self.last_activity = time.time()
         self.language_codes: list[str] | None = None
         
-        # 세션 데이터 (피드백용)
+        # 세션 데이터 (피드백용) - 메모리 제한 적용
         self.accumulated_audio: list[bytes] = []
+        self.accumulated_audio_size = 0  # 현재 누적 크기 추적
         self.total_audio_duration_ms = 0
         
         # 연결 종료 시 Redis 데이터 삭제 여부
         self.should_clear_data = False
+        
+        # 메시지 전송 통계 (디버깅용)
+        self.messages_sent = 0
+        self.last_message_time = 0.0
+    
+    def add_audio_chunk(self, audio_data: bytes, duration_ms: int) -> bool:
+        """
+        오디오 청크 추가 (메모리 제한 적용)
+        
+        Returns:
+            True if added, False if limit exceeded
+        """
+        chunk_size = len(audio_data)
+        
+        # 메모리 제한 체크
+        if self.accumulated_audio_size + chunk_size > self.MAX_ACCUMULATED_AUDIO_SIZE:
+            # 오래된 오디오 청크 제거 (FIFO)
+            while (self.accumulated_audio and 
+                   self.accumulated_audio_size + chunk_size > self.MAX_ACCUMULATED_AUDIO_SIZE):
+                removed = self.accumulated_audio.pop(0)
+                self.accumulated_audio_size -= len(removed)
+        
+        # 시간 제한 체크
+        if self.total_audio_duration_ms >= self.MAX_AUDIO_DURATION_MS:
+            # 시간 초과 시 오래된 것 제거
+            if self.accumulated_audio:
+                removed = self.accumulated_audio.pop(0)
+                self.accumulated_audio_size -= len(removed)
+                # 대략적인 duration 감소 (정확하지 않지만 제한용으로 충분)
+                self.total_audio_duration_ms = max(0, self.total_audio_duration_ms - 500)
+        
+        self.accumulated_audio.append(audio_data)
+        self.accumulated_audio_size += chunk_size
+        self.total_audio_duration_ms += duration_ms
+        self.last_activity = time.time()
+        return True
+    
+    def clear_audio_buffer(self) -> None:
+        """오디오 버퍼 정리"""
+        self.accumulated_audio.clear()
+        self.accumulated_audio_size = 0
+        self.total_audio_duration_ms = 0
 
 
 class RealtimePipeline:
@@ -88,8 +135,12 @@ class RealtimePipeline:
         
         # 독립적인 비동기 큐 (병렬 처리용)
         self._audio_queue: asyncio.Queue[tuple[bytes, AudioFormat]] = asyncio.Queue(maxsize=100)
-        self._text_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
+        # 텍스트 큐: (텍스트, 언어 코드) 튜플 - 언어 코드는 None일 수 있음
+        self._text_queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue(maxsize=100)
         self._sentence_queue: asyncio.Queue[str] = asyncio.Queue(maxsize=100)
+        
+        # 세션의 주요 언어 추적 (가장 많이 감지된 언어)
+        self._detected_languages: dict[str, int] = {}
         
         # 태스크
         self._tasks: list[asyncio.Task[Any]] = []
@@ -101,7 +152,28 @@ class RealtimePipeline:
             asyncio.create_task(self._nlp_worker(), name="nlp_worker"),
             asyncio.create_task(self._extraction_worker(), name="extraction_worker"),
         ]
+        
+        # 태스크 예외 콜백 추가 - 예외 발생 시 로깅
+        for task in self._tasks:
+            task.add_done_callback(self._task_done_callback)
+        
         logger.info("pipeline_started", session_id=self._session.session_id, workers=3)
+    
+    def _task_done_callback(self, task: asyncio.Task) -> None:
+        """태스크 완료 콜백 - 예외 로깅"""
+        try:
+            exc = task.exception()
+            if exc and not isinstance(exc, asyncio.CancelledError):
+                logger.error(
+                    "worker_task_failed",
+                    task_name=task.get_name(),
+                    error=str(exc),
+                    session_id=self._session.session_id,
+                )
+        except asyncio.CancelledError:
+            pass  # 정상 취소
+        except asyncio.InvalidStateError:
+            pass  # 태스크가 아직 실행 중
 
     async def stop(self) -> None:
         """파이프라인 중지"""
@@ -120,20 +192,22 @@ class RealtimePipeline:
             
             logger.debug("audio_chunk_received", size=len(audio_data), seq=payload.sequence_number)
             
-            # 세션 오디오 누적 (피드백용)
-            self._session.accumulated_audio.append(audio_data)
-            self._session.total_audio_duration_ms += payload.duration
+            # 세션 오디오 누적 (피드백용) - 메모리 제한 적용
+            self._session.add_audio_chunk(audio_data, payload.duration)
             
-            # 큐가 가득 차면 오래된 것 버림 (백프레셔)
-            if self._audio_queue.full():
-                try:
-                    self._audio_queue.get_nowait()
-                    logger.warning("audio_queue_full_dropped")
-                except asyncio.QueueEmpty:
-                    pass
-            
-            await self._audio_queue.put((audio_data, payload.format))
-            self._session.last_activity = time.time()
+            # 큐가 가득 차면 대기 (timeout으로 백프레셔 처리)
+            try:
+                await asyncio.wait_for(
+                    self._audio_queue.put((audio_data, payload.format)),
+                    timeout=0.5  # 500ms 대기
+                )
+            except asyncio.TimeoutError:
+                # 큐가 가득 찼고 500ms 동안 공간이 안 생김 - 청크 드롭
+                logger.warning(
+                    "audio_queue_timeout_dropped",
+                    seq=payload.sequence_number,
+                    queue_size=self._audio_queue.qsize(),
+                )
             
         except Exception as e:
             logger.error("audio_chunk_error", error=str(e))
@@ -149,6 +223,10 @@ class RealtimePipeline:
         settings = get_settings()
         language_codes = self._session.language_codes or settings.get_language_codes()
         
+        # 에러 추적
+        consecutive_errors = 0
+        MAX_CONSECUTIVE_ERRORS = 10
+        
         while self._session.is_active:
             try:
                 # 오디오 청크 대기
@@ -159,36 +237,78 @@ class RealtimePipeline:
                 except asyncio.TimeoutError:
                     continue
 
-                logger.info("stt_processing_audio", size=len(audio_data), codec=audio_format.codec)
+                logger.debug("stt_processing_audio", size=len(audio_data), codec=audio_format.codec)
                 
                 await self._send_status(ProcessingStage.STT_PROCESSING)
                 
                 segment_id = f"{self._session.session_id}_{self._session.sequence_counter}"
                 self._session.sequence_counter += 1
 
-                # Cloud Speech-to-Text v2 처리
-                result = await speech_client.transcribe_chunk(
-                    audio_data, audio_format, segment_id, language_codes
-                )
+                # Cloud Speech-to-Text v2 처리 (타임아웃 적용)
+                try:
+                    result = await asyncio.wait_for(
+                        speech_client.transcribe_chunk(
+                            audio_data, audio_format, segment_id, language_codes
+                        ),
+                        timeout=30.0  # 30초 타임아웃
+                    )
+                except asyncio.TimeoutError:
+                    logger.warning(
+                        "stt_transcribe_timeout",
+                        segment_id=segment_id,
+                        audio_size=len(audio_data),
+                    )
+                    consecutive_errors += 1
+                    continue
 
                 if result and result.text.strip():
                     # 부분 결과 클라이언트로 전송
-                    await self._send_stt_partial(result)
+                    send_success = await self._send_stt_partial(result)
                     
-                    # 텍스트 큐에 추가 (NLP 워커로 전달)
-                    await self._text_queue.put(result.text)
+                    if send_success:
+                        # 텍스트와 언어 코드를 함께 큐에 추가 (NLP 워커로 전달)
+                        try:
+                            await asyncio.wait_for(
+                                self._text_queue.put((result.text, result.language_code)),
+                                timeout=1.0
+                            )
+                        except asyncio.TimeoutError:
+                            logger.warning("text_queue_full", text_preview=result.text[:30])
+                        
+                        logger.debug(
+                            "stt_result",
+                            text=result.text[:50],
+                            language_code=result.language_code,
+                        )
                     
-                    logger.debug("stt_result", text=result.text[:50])
+                    # 성공 시 에러 카운터 리셋
+                    consecutive_errors = 0
 
                 await self._send_status(ProcessingStage.IDLE)
 
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error("stt_worker_error", error=str(e))
-                await asyncio.sleep(0.1)
+                consecutive_errors += 1
+                logger.error(
+                    "stt_worker_error",
+                    error=str(e),
+                    consecutive_errors=consecutive_errors,
+                )
+                
+                # 연속 에러가 너무 많으면 잠시 대기
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    logger.warning(
+                        "stt_worker_too_many_errors",
+                        consecutive_errors=consecutive_errors,
+                        sleeping_seconds=5,
+                    )
+                    await asyncio.sleep(5)
+                    consecutive_errors = 0
+                else:
+                    await asyncio.sleep(0.1)
 
-        logger.info("stt_worker_stopped")
+        logger.info("stt_worker_stopped", total_sequences=self._session.sequence_counter)
 
     # ============================================
     # Worker 2: NLP (문장 분리 및 분석)
@@ -206,10 +326,19 @@ class RealtimePipeline:
         while self._session.is_active:
             try:
                 try:
-                    new_text = await asyncio.wait_for(
+                    text_data = await asyncio.wait_for(
                         self._text_queue.get(), timeout=0.5
                     )
+                    # 텍스트와 언어 코드 분리
+                    new_text, language_code = text_data
                     last_text_time = time.time()
+                    
+                    # 언어 통계 업데이트
+                    if language_code:
+                        self._detected_languages[language_code] = (
+                            self._detected_languages.get(language_code, 0) + 1
+                        )
+                        
                 except asyncio.TimeoutError:
                     # 타임아웃: 버퍼에 텍스트가 있고 오래 되었으면 강제 확정
                     if text_buffer and len(text_buffer) >= MIN_FLUSH_LENGTH:
@@ -236,7 +365,9 @@ class RealtimePipeline:
                 text_buffer += " " + new_text
                 text_buffer = text_buffer.strip()
                 
-                sentences = self._extract_complete_sentences(text_buffer)
+                # 언어 코드에 따른 문장 분리
+                # 한국어가 아닌 경우(일본어 등) 다른 패턴 사용 가능
+                sentences = self._extract_complete_sentences(text_buffer, language_code)
                 
                 for sentence, remaining in sentences:
                     sentence_counter += 1
@@ -261,24 +392,60 @@ class RealtimePipeline:
                 logger.error("nlp_worker_error", error=str(e))
                 await asyncio.sleep(0.1)
 
+        # 세션 종료 시 언어 통계 로깅
+        if self._detected_languages:
+            logger.info(
+                "session_language_statistics",
+                languages=self._detected_languages,
+                primary_language=max(self._detected_languages, key=self._detected_languages.get),
+            )
+        
         logger.info("nlp_worker_stopped")
 
-    def _extract_complete_sentences(self, text: str) -> list[tuple[str, str]]:
-        """완성된 문장 추출 (다국어 지원, 유연한 매칭)"""
+    def _extract_complete_sentences(
+        self, text: str, language_code: str | None = None
+    ) -> list[tuple[str, str]]:
+        """
+        완성된 문장 추출 (다국어 지원, 유연한 매칭)
+        
+        Args:
+            text: 분석할 텍스트
+            language_code: STT에서 감지된 언어 코드 (ko, ja, en 등)
+        """
         results = []
         
-        # 다국어 문장 종결 패턴 (우선순위 순서)
-        endings = [
-            # 한국어 종결 어미
-            "습니다.", "입니다.", "합니다.", "됩니다.", "있습니다.", "없습니다.",
-            "니다.", "세요.", "까요?", "나요?", "네요.", "군요.", "거든요.",
-            "다.", "요.", "죠.", "요?", "죠?",
-            # 영어/일반
-            ". ", "! ", "? ", ".\n", "!\n", "?\n",
-            # 일본어/중국어
-            "。", "！", "？",
-            # 쉼표로 끊기는 경우도 긴 텍스트면 분리
-        ]
+        # 언어별 종결 패턴 우선순위 조정
+        if language_code and language_code.startswith("ja"):
+            # 일본어: 일본어 종결 패턴 우선
+            endings = [
+                # 일본어
+                "。", "！", "？", "ます。", "です。", "した。", "ました。",
+                # 영어/일반 (혼합 텍스트 대응)
+                ". ", "! ", "? ", ".\n", "!\n", "?\n",
+            ]
+        elif language_code and language_code.startswith("zh"):
+            # 중국어
+            endings = [
+                "。", "！", "？",
+                ". ", "! ", "? ",
+            ]
+        elif language_code and language_code.startswith("en"):
+            # 영어
+            endings = [
+                ". ", "! ", "? ", ".\n", "!\n", "?\n",
+            ]
+        else:
+            # 한국어 또는 미지정: 기존 패턴 (한국어 우선)
+            endings = [
+                # 한국어 종결 어미
+                "습니다.", "입니다.", "합니다.", "됩니다.", "있습니다.", "없습니다.",
+                "니다.", "세요.", "까요?", "나요?", "네요.", "군요.", "거든요.",
+                "다.", "요.", "죠.", "요?", "죠?",
+                # 영어/일반
+                ". ", "! ", "? ", ".\n", "!\n", "?\n",
+                # 일본어/중국어
+                "。", "！", "？",
+            ]
         
         remaining = text
         found_any = True
@@ -474,19 +641,72 @@ class RealtimePipeline:
     # ============================================
     # 메시지 전송 헬퍼
     # ============================================
+    
+    # 메시지 전송 rate limiting
+    _MIN_MESSAGE_INTERVAL = 0.01  # 최소 10ms 간격
+    _MAX_MESSAGES_PER_SECOND = 50  # 초당 최대 50개
 
-    async def _send_message(self, msg_type: WSMessageType, payload: dict[str, Any]) -> None:
-        """WebSocket 메시지 전송"""
+    async def _send_message(self, msg_type: WSMessageType, payload: dict[str, Any]) -> bool:
+        """
+        WebSocket 메시지 전송 (안정화된 버전)
+        
+        Returns:
+            True if sent successfully, False otherwise
+        """
+        # 세션 비활성화 상태면 전송 안함
+        if not self._session.is_active:
+            return False
+        
         try:
+            # Rate limiting - 너무 빠른 전송 방지
+            now = time.time()
+            elapsed = now - self._session.last_message_time
+            if elapsed < self._MIN_MESSAGE_INTERVAL:
+                await asyncio.sleep(self._MIN_MESSAGE_INTERVAL - elapsed)
+            
+            # WebSocket 연결 상태 확인
+            if self._ws.client_state.name != "CONNECTED":
+                logger.warning(
+                    "websocket_not_connected",
+                    state=self._ws.client_state.name,
+                    msg_type=msg_type.value,
+                )
+                return False
+            
             message = WSMessage(
                 type=msg_type,
                 payload=payload,
                 timestamp=int(time.time() * 1000),
                 messageId=str(uuid.uuid4()),
             )
-            await self._ws.send_json(message.model_dump(by_alias=True))
+            
+            # 타임아웃 적용하여 전송
+            await asyncio.wait_for(
+                self._ws.send_json(message.model_dump(by_alias=True)),
+                timeout=5.0  # 5초 타임아웃
+            )
+            
+            # 통계 업데이트
+            self._session.messages_sent += 1
+            self._session.last_message_time = time.time()
+            
+            return True
+            
+        except asyncio.TimeoutError:
+            logger.error(
+                "send_message_timeout",
+                msg_type=msg_type.value,
+                session_id=self._session.session_id,
+            )
+            return False
         except Exception as e:
-            logger.error("send_message_error", error=str(e))
+            logger.error(
+                "send_message_error",
+                error=str(e),
+                msg_type=msg_type.value,
+                session_id=self._session.session_id,
+            )
+            return False
 
     async def _send_status(self, stage: ProcessingStage, chunk_id: str | None = None) -> None:
         payload = ProcessingStatusPayload(stage=stage, chunkId=chunk_id)

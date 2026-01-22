@@ -25,28 +25,88 @@ logger = get_logger(__name__)
 
 class GraphStateManager:
     """그래프 상태 관리자"""
+    
+    # 캐시 제한 상수
+    MAX_CACHE_SIZE = 100  # 최대 캐시 세션 수
+    CACHE_TTL_SECONDS = 3600  # 캐시 TTL (1시간)
 
     def __init__(self, redis: RedisManager) -> None:
         self._redis = redis
         self._local_cache: dict[str, GraphState] = {}
+        self._cache_timestamps: dict[str, float] = {}  # 캐시 타임스탬프
         self._lock = asyncio.Lock()
+    
+    async def cleanup_cache(self) -> int:
+        """
+        오래된 캐시 항목 정리
+        
+        Returns:
+            정리된 항목 수
+        """
+        async with self._lock:
+            now = time.time()
+            expired_sessions = []
+            
+            # 만료된 세션 찾기
+            for session_id, timestamp in self._cache_timestamps.items():
+                if now - timestamp > self.CACHE_TTL_SECONDS:
+                    expired_sessions.append(session_id)
+            
+            # 캐시 크기 제한 체크 (LRU 방식)
+            if len(self._local_cache) > self.MAX_CACHE_SIZE:
+                # 가장 오래된 것부터 제거
+                sorted_sessions = sorted(
+                    self._cache_timestamps.items(),
+                    key=lambda x: x[1]
+                )
+                excess = len(self._local_cache) - self.MAX_CACHE_SIZE
+                for session_id, _ in sorted_sessions[:excess]:
+                    if session_id not in expired_sessions:
+                        expired_sessions.append(session_id)
+            
+            # 캐시에서 제거
+            for session_id in expired_sessions:
+                self._local_cache.pop(session_id, None)
+                self._cache_timestamps.pop(session_id, None)
+            
+            if expired_sessions:
+                logger.info(
+                    "graph_cache_cleaned",
+                    removed_count=len(expired_sessions),
+                    remaining_count=len(self._local_cache),
+                )
+            
+            return len(expired_sessions)
+    
+    def remove_from_cache(self, session_id: str) -> None:
+        """특정 세션을 캐시에서 제거"""
+        self._local_cache.pop(session_id, None)
+        self._cache_timestamps.pop(session_id, None)
 
     async def get_state(self, session_id: str) -> GraphState:
         """세션의 현재 그래프 상태 조회"""
         # 로컬 캐시 확인
         if session_id in self._local_cache:
+            # 캐시 타임스탬프 업데이트 (LRU)
+            self._cache_timestamps[session_id] = time.time()
             return self._local_cache[session_id]
+
+        # 주기적으로 캐시 정리 (100세션마다)
+        if len(self._local_cache) > 0 and len(self._local_cache) % 100 == 0:
+            asyncio.create_task(self.cleanup_cache())
 
         # Redis에서 로드
         data = await self._redis.load_graph_state(session_id)
         if data:
             state = GraphState(**data)
             self._local_cache[session_id] = state
+            self._cache_timestamps[session_id] = time.time()
             return state
 
         # 새 상태 생성
         state = self._create_empty_state()
         self._local_cache[session_id] = state
+        self._cache_timestamps[session_id] = time.time()
         await self._save_state(session_id, state)
         return state
 

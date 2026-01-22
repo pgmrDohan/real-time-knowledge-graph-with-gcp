@@ -212,6 +212,7 @@ class STTPartialPayload(BaseModel):
     text: str
     confidence: float
     segment_id: str = Field(alias="segmentId")
+    language_code: str | None = Field(default=None, alias="languageCode")
 
     model_config = {"populate_by_name": True}
 

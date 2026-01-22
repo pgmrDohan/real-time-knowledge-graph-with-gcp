@@ -53,13 +53,21 @@ export function App() {
     };
   }, [connect, disconnect]);
 
+  // 세션이 완료된 상태인지 (그래프가 있고, 캡처 중이 아닌 상태)
+  const hasGraphData = graphState && (graphState.entities.length > 0 || graphState.relations.length > 0);
+  const isSessionComplete = !isCapturing && hasGraphData;
+
   const handleToggleCapture = async () => {
     if (isCapturing) {
+      // 캡처 중지: 세션만 종료하고 그래프는 유지
       stopCapture();
-      // 세션 완전 초기화: 서버 세션 클리어 + 클라이언트 그래프 초기화
-      endSession(true);
-      resetGraph();
+      endSession(false);  // clearSession=false → 그래프 유지
     } else {
+      // 새로 시작: 기존 그래프가 있으면 초기화
+      if (hasGraphData) {
+        endSession(true);  // 서버 세션 클리어
+        resetGraph();      // 클라이언트 그래프 초기화
+      }
       await startCapture();
       // 세션 시작 메시지 전송
       startSession();
@@ -102,6 +110,7 @@ export function App() {
           <ControlPanel
             isConnected={isConnected}
             isCapturing={isCapturing}
+            isSessionComplete={isSessionComplete}
             onToggleCapture={handleToggleCapture}
           />
           <TranscriptPanel />

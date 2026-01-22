@@ -128,10 +128,20 @@ class CloudSpeechToText:
                     text = best_alternative.transcript.strip()
 
                     if text:
-                        # 감지된 언어 로깅
+                        # 감지된 언어 코드 추출
                         detected_language = getattr(
-                            best_result, "language_code", "unknown"
+                            best_result, "language_code", None
                         )
+                        # 언어 코드가 없으면 응답 전체에서 확인
+                        if not detected_language:
+                            detected_language = getattr(
+                                response, "metadata", {}
+                            )
+                            if hasattr(detected_language, "get"):
+                                detected_language = detected_language.get("language_code")
+                            else:
+                                detected_language = None
+                        
                         logger.debug(
                             "stt_result",
                             segment_id=segment_id,
@@ -144,6 +154,7 @@ class CloudSpeechToText:
                             text=text,
                             confidence=best_alternative.confidence,
                             segment_id=segment_id,
+                            language_code=detected_language,
                         )
 
             return None
