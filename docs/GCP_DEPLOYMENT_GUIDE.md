@@ -450,7 +450,121 @@ Terraform에서 자동 설정됨:
 
 ---
 
+## WebSocket 안정성 설정
+
+Cloud Run에서 WebSocket 연결을 안정적으로 유지하기 위한 설정입니다.
+
+### 1. Cloud Run 타임아웃 설정
+
+WebSocket 연결은 장시간 유지되어야 하므로 적절한 타임아웃 설정이 필요합니다:
+
+```bash
+gcloud run deploy knowledge-graph-api \
+    --image gcr.io/YOUR_PROJECT_ID/knowledge-graph-api:latest \
+    --region asia-northeast3 \
+    --timeout 3600 \           # HTTP 요청 타임아웃: 1시간 (최대)
+    --session-affinity \       # 세션 어피니티 활성화 (같은 인스턴스로 라우팅)
+    # ... 기타 옵션
+```
+
+### 2. Uvicorn WebSocket 설정
+
+Dockerfile에서 Uvicorn 실행 시 WebSocket 관련 설정:
+
+```dockerfile
+CMD exec uvicorn main:app \
+    --host 0.0.0.0 \
+    --port ${PORT} \
+    --workers 1 \
+    --ws-ping-interval 20 \    # 서버→클라이언트 ping 간격 (20초)
+    --ws-ping-timeout 30 \     # ping 응답 대기 시간 (30초)
+    --timeout-keep-alive 120 \ # HTTP keep-alive 타임아웃 (120초)
+    --ws-max-size 16777216     # WebSocket 메시지 최대 크기 (16MB)
+```
+
+### 3. 클라이언트 Heartbeat 설정
+
+프론트엔드에서 연결 유지를 위한 권장 설정:
+
+| 설정 | 권장값 | 설명 |
+|------|--------|------|
+| Ping 간격 | 15초 | 클라이언트→서버 PING 전송 간격 |
+| PONG 타임아웃 | 45초 | PONG 응답 없으면 재연결 |
+| 재연결 백오프 | 1-30초 | 지수 백오프 (최대 30초) |
+| 최대 재연결 시도 | 10회 | 10회 실패 후 포기 |
+
+### 4. 서버 측 Heartbeat 설정
+
+백엔드에서 연결 상태 모니터링:
+
+| 설정 | 값 | 설명 |
+|------|-----|------|
+| Heartbeat 간격 | 15초 | 서버→클라이언트 PING 전송 간격 |
+| 클라이언트 타임아웃 | 45초 | 응답 없으면 연결 종료 |
+| 메시지 전송 Rate Limit | 50/초 | 초당 최대 메시지 수 |
+| 메시지 전송 타임아웃 | 5초 | 개별 메시지 전송 타임아웃 |
+
+### 5. Cloud Run 인스턴스 설정
+
+WebSocket 연결 안정성을 위한 인스턴스 설정:
+
+```bash
+gcloud run deploy knowledge-graph-api \
+    --min-instances 1 \        # 최소 1개 인스턴스 유지 (콜드 스타트 방지)
+    --max-instances 10 \       # 최대 인스턴스 수
+    --concurrency 50 \         # 인스턴스당 동시 연결 수 (WebSocket은 낮게 설정)
+    --cpu-boost \              # 시작 시 CPU 부스트 (콜드 스타트 개선)
+    # ... 기타 옵션
+```
+
+**주의사항:**
+- `--concurrency`는 WebSocket 연결 시 낮게 설정 (50-80 권장)
+- `--min-instances 1` 이상으로 설정하면 콜드 스타트로 인한 연결 지연 방지
+- `--session-affinity`는 같은 세션이 같은 인스턴스로 라우팅되도록 보장
+
+### 6. 네트워크 안정성 체크리스트
+
+- [ ] VPC 커넥터가 올바르게 설정되어 있는지 확인
+- [ ] Cloud Run 서비스의 타임아웃이 충분히 긴지 확인 (최소 300초)
+- [ ] 클라이언트와 서버 모두 Heartbeat가 활성화되어 있는지 확인
+- [ ] 재연결 로직이 지수 백오프를 사용하는지 확인
+- [ ] 로드 밸런서 타임아웃 설정 확인 (Cloud Run 기본 사용 시 자동)
+
+---
+
 ## 문제 해결
+
+### WebSocket 연결 불안정
+
+**증상**: WebSocket 연결이 자주 끊기거나, 특정 시간 후 멈춤
+
+**원인 및 해결책**:
+
+1. **Cloud Run 타임아웃**
+   - 기본 타임아웃(300초)이 너무 짧을 수 있음
+   - `--timeout 3600`으로 늘리기
+
+2. **Heartbeat 미설정**
+   - 클라이언트/서버 모두 PING/PONG 구현 확인
+   - 15초 간격으로 Heartbeat 전송
+
+3. **메모리 누수**
+   - 오디오 버퍼가 무한히 쌓이는지 확인
+   - 서버 로그에서 `audio_buffer_mb` 모니터링
+
+4. **동시 연결 초과**
+   - `--concurrency` 값 확인
+   - 인스턴스당 연결 수 모니터링
+
+**디버깅 명령어**:
+
+```bash
+# Cloud Run 로그에서 WebSocket 관련 이벤트 확인
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="knowledge-graph-api" AND (textPayload:"websocket" OR textPayload:"heartbeat")' --limit=100
+
+# 연결 통계 확인
+gcloud logging read 'resource.type="cloud_run_revision" AND resource.labels.service_name="knowledge-graph-api" AND textPayload:"pipeline_started"' --limit=50
+```
 
 ### Cloud Run 배포 실패
 

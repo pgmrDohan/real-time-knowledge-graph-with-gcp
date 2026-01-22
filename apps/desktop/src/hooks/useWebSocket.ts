@@ -15,6 +15,7 @@ type WSMessageType =
   | 'START_SESSION'
   | 'END_SESSION'
   | 'PING'
+  | 'PONG'
   | 'SUBMIT_FEEDBACK'
   | 'TRANSLATE_GRAPH'
   | 'STT_PARTIAL'
@@ -23,7 +24,6 @@ type WSMessageType =
   | 'GRAPH_FULL'
   | 'PROCESSING_STATUS'
   | 'ERROR'
-  | 'PONG'
   | 'FEEDBACK_RESULT'
   | 'REQUEST_FEEDBACK'
   | 'TRANSLATE_RESULT';
@@ -79,6 +79,17 @@ export function useWebSocket() {
   // 연결 상태 모니터링
   const lastPongTimeRef = useRef<number>(Date.now());
   const connectionHealthCheckRef = useRef<NodeJS.Timeout | undefined>(undefined);
+  
+  // 재연결 시도 횟수 (지수 백오프용)
+  const reconnectAttemptsRef = useRef<number>(0);
+  const maxReconnectAttempts = 10;
+  
+  // 메시지 통계 (디버깅용)
+  const messageStatsRef = useRef({
+    sent: 0,
+    received: 0,
+    lastReceivedTime: Date.now(),
+  });
 
   const {
     setGraphState,
@@ -183,6 +194,20 @@ export function useWebSocket() {
             // 연결 유지 확인 - 마지막 응답 시간 업데이트
             lastPongTimeRef.current = Date.now();
             break;
+          
+          case 'PING':
+            // 서버에서 PING이 오면 PONG 응답
+            if (wsRef.current?.readyState === WebSocket.OPEN) {
+              wsRef.current.send(
+                JSON.stringify({
+                  type: 'PONG',
+                  payload: {},
+                  timestamp: Date.now(),
+                  messageId: crypto.randomUUID(),
+                })
+              );
+            }
+            break;
         }
       } catch (error) {
         console.error('Failed to parse WebSocket message:', error);
@@ -204,6 +229,9 @@ export function useWebSocket() {
       console.log('WebSocket connected');
       setIsConnected(true);
 
+      // 재연결 성공 시 카운터 리셋
+      reconnectAttemptsRef.current = 0;
+      
       // 마지막 PONG 시간 초기화
       lastPongTimeRef.current = Date.now();
       
@@ -255,8 +283,8 @@ export function useWebSocket() {
 
     ws.onmessage = handleMessage;
 
-    ws.onclose = () => {
-      console.log('WebSocket disconnected');
+    ws.onclose = (event) => {
+      console.log('WebSocket disconnected', { code: event.code, reason: event.reason });
       setIsConnected(false);
 
       if (pingIntervalRef.current) {
@@ -269,13 +297,23 @@ export function useWebSocket() {
         connectionHealthCheckRef.current = undefined;
       }
 
+      // 최대 재연결 시도 횟수 체크
+      if (reconnectAttemptsRef.current >= maxReconnectAttempts) {
+        console.error('[WS] Max reconnection attempts reached, giving up');
+        return;
+      }
+
       // 자동 재연결 - 지수 백오프 적용 (최대 30초)
       const baseDelay = 1000;
       const maxDelay = 30000;
-      const delay = Math.min(baseDelay * Math.pow(2, Math.random()), maxDelay);
+      const jitter = Math.random() * 1000; // 0-1초 랜덤 지터
+      const delay = Math.min(baseDelay * Math.pow(2, reconnectAttemptsRef.current), maxDelay) + jitter;
+      
+      reconnectAttemptsRef.current += 1;
+      
+      console.log(`[WS] Reconnecting in ${Math.round(delay)}ms (attempt ${reconnectAttemptsRef.current}/${maxReconnectAttempts})`);
       
       reconnectTimeoutRef.current = setTimeout(() => {
-        console.log('[WS] Attempting reconnection...');
         connect();
       }, delay);
     };

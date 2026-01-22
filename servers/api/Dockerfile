@@ -35,4 +35,16 @@ HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
 EXPOSE ${PORT}
 
 # 서버 실행
-CMD exec uvicorn main:app --host 0.0.0.0 --port ${PORT} --workers 1
+# WebSocket 안정성을 위한 설정:
+# --ws-ping-interval: 서버→클라이언트 ping 간격 (20초)
+# --ws-ping-timeout: ping 응답 대기 시간 (30초)
+# --timeout-keep-alive: HTTP keep-alive 타임아웃 (120초)
+# --ws-max-size: WebSocket 메시지 최대 크기 (16MB)
+CMD exec uvicorn main:app \
+    --host 0.0.0.0 \
+    --port ${PORT} \
+    --workers 1 \
+    --ws-ping-interval 20 \
+    --ws-ping-timeout 30 \
+    --timeout-keep-alive 120 \
+    --ws-max-size 16777216
