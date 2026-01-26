@@ -91,6 +91,7 @@ interface GraphStoreState {
   addFinalSTT: (payload: STTFinalPayload) => void;
   clearTranscripts: () => void;
   resetGraph: () => void;
+  reorganizeGraph: () => void;
   setShowFeedbackDialog: (show: boolean) => void;
   setFeedbackRequest: (request: FeedbackRequest | null) => void;
   setShowTranslateDialog: (show: boolean) => void;
@@ -219,6 +220,9 @@ function calculateDagreLayout(
   
   // 고립 노드들은 오른쪽 영역에 별도 배치
   arrangeIsolatedNodes(isolatedNodes, positions, existingPositions);
+  
+  // 긴 엣지 최소화를 위한 후처리
+  optimizeLongEdges(positions, relations);
   
   return positions;
 }
@@ -531,9 +535,44 @@ function calculateIncrementalLayout(
 }
 
 /**
- * 엣지 스타일 설정
- * - 연결된 노드 간 거리에 따라 스타일 조정
- * - 겹치는 엣지는 곡선으로 처리
+ * 노드 간 상대 위치에 따라 최적의 핸들 위치 계산
+ * 선이 보기 좋게 연결되도록 상하좌우 중 최적 위치 선정
+ */
+function calculateOptimalHandles(
+  sourcePos: { x: number; y: number },
+  targetPos: { x: number; y: number }
+): { sourceHandle: string; targetHandle: string } {
+  const dx = targetPos.x - sourcePos.x;
+  const dy = targetPos.y - sourcePos.y;
+  const absDx = Math.abs(dx);
+  const absDy = Math.abs(dy);
+
+  // 수평 방향이 더 지배적인 경우
+  if (absDx > absDy * 0.5) {
+    if (dx > 0) {
+      // target이 오른쪽에 있음
+      return { sourceHandle: 'right', targetHandle: 'left' };
+    } else {
+      // target이 왼쪽에 있음
+      return { sourceHandle: 'left', targetHandle: 'right' };
+    }
+  }
+  // 수직 방향이 더 지배적인 경우
+  else {
+    if (dy > 0) {
+      // target이 아래에 있음
+      return { sourceHandle: 'bottom', targetHandle: 'top' };
+    } else {
+      // target이 위에 있음
+      return { sourceHandle: 'top', targetHandle: 'bottom' };
+    }
+  }
+}
+
+/**
+ * 엣지 스타일 설정 (개선된 버전)
+ * - 모든 엣지를 부드러운 곡선으로 처리
+ * - 노드 간 상대 위치에 따라 최적의 핸들 위치 계산
  */
 function styleEdges(
   nodes: Node<RFNodeData>[],
@@ -541,44 +580,121 @@ function styleEdges(
 ): Edge<RFEdgeData>[] {
   const nodePositions = new Map(nodes.map((n) => [n.id, n.position]));
 
-  // 같은 source-target 쌍의 엣지 그룹화 (양방향 포함)
-  const edgePairs = new Map<string, Edge<RFEdgeData>[]>();
-  edges.forEach((edge) => {
-    const key = [edge.source, edge.target].sort().join('-');
-    if (!edgePairs.has(key)) {
-      edgePairs.set(key, []);
-    }
-    edgePairs.get(key)!.push(edge);
-  });
-
   return edges.map((edge) => {
     const sourcePos = nodePositions.get(edge.source);
     const targetPos = nodePositions.get(edge.target);
 
     if (!sourcePos || !targetPos) return edge;
 
-    // 거리 계산
-    const dx = targetPos.x - sourcePos.x;
-    const dy = targetPos.y - sourcePos.y;
-    const distance = Math.sqrt(dx * dx + dy * dy);
-
-    // 같은 노드 쌍 사이에 여러 엣지가 있는지 확인
-    const pairKey = [edge.source, edge.target].sort().join('-');
-    const pairEdges = edgePairs.get(pairKey) || [];
-    const hasMultipleEdges = pairEdges.length > 1;
-
-    // 먼 거리 또는 다중 엣지인 경우 곡선 사용
-    const useCurve = distance > NODE_SPACING_X * 2 || hasMultipleEdges;
+    // 최적의 핸들 위치 계산
+    const { sourceHandle, targetHandle } = calculateOptimalHandles(sourcePos, targetPos);
 
     return {
       ...edge,
-      type: useCurve ? 'smoothstep' : 'default',
+      type: 'default', // 부드러운 곡선 (React Flow의 default가 bezier)
+      sourceHandle,
+      targetHandle,
       style: {
         ...edge.style,
         strokeWidth: edge.data?.isNew ? 2 : 1,
       },
     };
   });
+}
+
+/**
+ * 긴 엣지 최소화를 위한 레이아웃 후처리
+ * 연결된 노드들이 너무 멀리 떨어져 있으면 더 가깝게 조정
+ */
+function optimizeLongEdges(
+  positions: Map<string, { x: number; y: number }>,
+  relations: GraphRelation[],
+  maxEdgeLength: number = NODE_SPACING_X * 3
+): void {
+  const MAX_ITERATIONS = 5;
+  
+  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
+    let adjusted = false;
+    
+    for (const relation of relations) {
+      const sourcePos = positions.get(relation.source);
+      const targetPos = positions.get(relation.target);
+      
+      if (!sourcePos || !targetPos) continue;
+      
+      const dx = targetPos.x - sourcePos.x;
+      const dy = targetPos.y - sourcePos.y;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      // 엣지가 너무 길면 조정
+      if (distance > maxEdgeLength) {
+        // 중점 방향으로 양쪽 노드를 20%씩 이동
+        const ratio = 0.2;
+        const midX = (sourcePos.x + targetPos.x) / 2;
+        const midY = (sourcePos.y + targetPos.y) / 2;
+        
+        // source를 중점 방향으로 이동
+        sourcePos.x = sourcePos.x + (midX - sourcePos.x) * ratio;
+        sourcePos.y = sourcePos.y + (midY - sourcePos.y) * ratio;
+        
+        // target을 중점 방향으로 이동
+        targetPos.x = targetPos.x + (midX - targetPos.x) * ratio;
+        targetPos.y = targetPos.y + (midY - targetPos.y) * ratio;
+        
+        adjusted = true;
+      }
+    }
+    
+    // 더 이상 조정할 것이 없으면 종료
+    if (!adjusted) break;
+  }
+  
+  // 노드 간 겹침 해결
+  resolveNodeOverlaps(positions);
+}
+
+/**
+ * 노드 겹침 해결
+ */
+function resolveNodeOverlaps(
+  positions: Map<string, { x: number; y: number }>
+): void {
+  const posArray = Array.from(positions.entries());
+  const minDistanceX = NODE_WIDTH + 30;
+  const minDistanceY = NODE_HEIGHT + 20;
+  
+  for (let i = 0; i < posArray.length; i++) {
+    for (let j = i + 1; j < posArray.length; j++) {
+      const [, pos1] = posArray[i];
+      const [, pos2] = posArray[j];
+      
+      const dx = Math.abs(pos2.x - pos1.x);
+      const dy = Math.abs(pos2.y - pos1.y);
+      
+      // 겹치는 경우
+      if (dx < minDistanceX && dy < minDistanceY) {
+        // 밀어내기
+        const pushX = (minDistanceX - dx) / 2 + 10;
+        const pushY = (minDistanceY - dy) / 2 + 10;
+        
+        if (pos1.x < pos2.x) {
+          pos1.x -= pushX;
+          pos2.x += pushX;
+        } else {
+          pos1.x += pushX;
+          pos2.x -= pushX;
+        }
+        
+        if (pos1.y < pos2.y) {
+          pos1.y -= pushY;
+          pos2.y += pushY;
+        } else {
+          pos1.y += pushY;
+          pos2.y -= pushY;
+        }
+      }
+    }
+  }
 }
 
 // 엔티티를 React Flow 노드로 변환
@@ -609,7 +725,7 @@ function relationToEdge(relation: GraphRelation, isNew = false): Edge<RFEdgeData
     source: relation.source,
     target: relation.target,
     label: relation.relation,
-    type: 'smoothstep',
+    type: 'default', // 부드러운 곡선 (React Flow의 default가 bezier)
     animated: isNew,
     style: {
       stroke: isNew ? '#00ffff' : '#4a5568',
@@ -817,6 +933,28 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       transcripts: [],
       currentPartialText: '',
     }),
+
+  // 그래프 레이아웃 재정렬 (Dagre 알고리즘 재실행)
+  reorganizeGraph: () => {
+    const currentState = get().graphState;
+    if (!currentState || currentState.entities.length === 0) return;
+
+    // Dagre 레이아웃 새로 계산 (기존 위치 무시)
+    const positions = calculateDagreLayout(
+      currentState.entities,
+      currentState.relations,
+      new Map() // 빈 맵 전달 → 기존 위치 무시하고 완전히 새로 계산
+    );
+
+    const nodes = currentState.entities.map((entity) => {
+      const pos = positions.get(entity.id) || { x: 400, y: 300 };
+      return entityToNode(entity, pos);
+    });
+    const edges = currentState.relations.map((relation) => relationToEdge(relation));
+    const styledEdges = styleEdges(nodes, edges);
+
+    set({ nodes, edges: styledEdges });
+  },
 
   // 피드백 다이얼로그 표시
   setShowFeedbackDialog: (show) => set({ showFeedbackDialog: show }),

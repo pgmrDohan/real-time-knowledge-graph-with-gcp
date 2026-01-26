@@ -137,6 +137,7 @@ export function ExportDialog({
     const dataUrl = await toPng(element, {
       backgroundColor: '#0f0f17',
       pixelRatio: 2,
+      skipFonts: true, // 외부 폰트 스킵 (CSP 문제 방지)
       filter: (node) => {
         // React Flow 컨트롤과 미니맵 제외
         if (node.classList?.contains('react-flow__controls')) return false;
@@ -159,6 +160,7 @@ export function ExportDialog({
     const dataUrl = await toPng(element, {
       backgroundColor: '#0f0f17',
       pixelRatio: 2,
+      skipFonts: true, // 외부 폰트 스킵 (CSP 문제 방지)
       filter: (node) => {
         if (node.classList?.contains('react-flow__controls')) return false;
         if (node.classList?.contains('react-flow__minimap')) return false;

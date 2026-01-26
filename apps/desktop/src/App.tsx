@@ -11,20 +11,37 @@ import { ExportDialog } from './components/ExportDialog';
 import { useWebSocket } from './hooks/useWebSocket';
 import { useAudioCapture } from './hooks/useAudioCapture';
 import { useGraphStore } from './store/graphStore';
+import { useDemoMode } from './demo/useDemoMode';
 
 export function App() {
+  // 데모 모드 훅
+  const {
+    isDemoMode,
+    isDemoRunning,
+    setDemoMode,
+    startDemoCapture,
+    stopDemoCapture,
+    demoTranslate,
+    isConnected: demoIsConnected,
+  } = useDemoMode();
+
   const {
     connect,
     disconnect,
-    isConnected,
+    isConnected: realIsConnected,
     sendAudioChunk,
     startSession,
     endSession,
     submitFeedback,
-    translateGraph,
+    translateGraph: realTranslateGraph,
   } = useWebSocket();
-  const { isCapturing, startCapture, stopCapture, error: captureError } =
+  const { isCapturing: realIsCapturing, startCapture, stopCapture, error: captureError } =
     useAudioCapture(sendAudioChunk);
+
+  // 데모 모드에 따라 상태 선택
+  const isConnected = isDemoMode ? demoIsConnected : realIsConnected;
+  const isCapturing = isDemoMode ? isDemoRunning : realIsCapturing;
+
   const processingStage = useGraphStore((state) => state.processingStage);
   const showFeedbackDialog = useGraphStore((state) => state.showFeedbackDialog);
   const feedbackRequest = useGraphStore((state) => state.feedbackRequest);
@@ -45,32 +62,57 @@ export function App() {
   const showExportDialog = useGraphStore((state) => state.showExportDialog);
   const setShowExportDialog = useGraphStore((state) => state.setShowExportDialog);
 
-  // 컴포넌트 마운트 시 WebSocket 연결
+  // 컴포넌트 마운트 시 WebSocket 연결 (데모 모드가 아닐 때만)
   useEffect(() => {
-    connect();
-    return () => {
-      disconnect();
+    if (!isDemoMode) {
+      connect();
+      return () => {
+        disconnect();
+      };
+    }
+  }, [connect, disconnect, isDemoMode]);
+
+  // 키보드 단축키로 데모 모드 토글 (Ctrl+Shift+D)
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if (e.ctrlKey && e.shiftKey && e.key === 'D') {
+        e.preventDefault();
+        setDemoMode(!isDemoMode);
+        console.log(`[Demo Mode] ${!isDemoMode ? 'Enabled' : 'Disabled'}`);
+      }
     };
-  }, [connect, disconnect]);
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isDemoMode, setDemoMode]);
 
   // 세션이 완료된 상태인지 (그래프가 있고, 캡처 중이 아닌 상태)
   const hasGraphData = graphState && (graphState.entities.length > 0 || graphState.relations.length > 0);
   const isSessionComplete = !isCapturing && hasGraphData;
 
   const handleToggleCapture = async () => {
-    if (isCapturing) {
-      // 캡처 중지: 세션만 종료하고 그래프는 유지
-      stopCapture();
-      endSession(false);  // clearSession=false → 그래프 유지
-    } else {
-      // 새로 시작: 기존 그래프가 있으면 초기화
-      if (hasGraphData) {
-        endSession(true);  // 서버 세션 클리어
-        resetGraph();      // 클라이언트 그래프 초기화
+    if (isDemoMode) {
+      // 데모 모드: 가짜 캡처
+      if (isDemoRunning) {
+        stopDemoCapture();
+      } else {
+        startDemoCapture();
       }
-      await startCapture();
-      // 세션 시작 메시지 전송
-      startSession();
+    } else {
+      // 실제 모드
+      if (isCapturing) {
+        // 캡처 중지: 세션만 종료하고 그래프는 유지
+        stopCapture();
+        endSession(false);  // clearSession=false → 그래프 유지
+      } else {
+        // 새로 시작: 기존 그래프가 있으면 초기화
+        if (hasGraphData) {
+          endSession(true);  // 서버 세션 클리어
+          resetGraph();      // 클라이언트 그래프 초기화
+        }
+        await startCapture();
+        // 세션 시작 메시지 전송
+        startSession();
+      }
     }
   };
 
@@ -86,8 +128,14 @@ export function App() {
   };
 
   const handleTranslate = (targetLanguage: string) => {
-    setIsTranslating(true);
-    translateGraph(targetLanguage);
+    if (isDemoMode) {
+      // 데모 모드: 가짜 번역
+      demoTranslate(targetLanguage);
+    } else {
+      // 실제 모드
+      setIsTranslating(true);
+      realTranslateGraph(targetLanguage);
+    }
   };
 
   const handleTranslateClose = () => {

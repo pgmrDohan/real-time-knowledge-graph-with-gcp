@@ -3,12 +3,12 @@
  * macOS 스타일의 윈도우 컨트롤 + 번역/내보내기 버튼
  */
 
-import { Minus, Square, X, Languages, Download } from 'lucide-react';
+import { Minus, Square, X, Languages, Download, LayoutGrid } from 'lucide-react';
 import { useGraphStore } from '../store/graphStore';
 
 export function TitleBar() {
   const isMac = window.electronAPI?.platform === 'darwin';
-  const { graphState, setShowTranslateDialog, setShowExportDialog } = useGraphStore();
+  const { graphState, setShowTranslateDialog, setShowExportDialog, reorganizeGraph } = useGraphStore();
   
   const hasGraph = graphState && graphState.entities.length > 0;
 
@@ -17,6 +17,7 @@ export function TitleBar() {
   const handleClose = () => window.electronAPI?.closeWindow();
   const handleTranslate = () => setShowTranslateDialog(true);
   const handleExport = () => setShowExportDialog(true);
+  const handleReorganize = () => reorganizeGraph();
 
   return (
     <header className="titlebar-drag h-10 bg-surface-800/80 backdrop-blur-sm border-b border-surface-700 flex items-center justify-between px-4">
@@ -59,6 +60,16 @@ export function TitleBar() {
             >
               <Languages size={13} />
               <span>번역</span>
+            </button>
+            
+            {/* 정리 버튼 */}
+            <button
+              onClick={handleReorganize}
+              className="flex items-center gap-1.5 px-2.5 py-1 text-xs font-medium text-gray-400 hover:text-neon-cyan hover:bg-surface-700/80 rounded-md transition-colors border border-transparent hover:border-surface-600"
+              aria-label="그래프 정리"
+            >
+              <LayoutGrid size={13} />
+              <span>정리</span>
             </button>
             
             {/* 내보내기 버튼 */}

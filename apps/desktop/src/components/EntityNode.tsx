@@ -86,15 +86,55 @@ function EntityNodeComponent({ data }: NodeProps<RFNodeData>) {
         isUpdated && 'ring-2 ring-neon-yellow/50'
       )}
     >
-      {/* 입력/출력 핸들 */}
+      {/* 입력 핸들 (4방향) */}
+      <Handle
+        type="target"
+        position={Position.Top}
+        id="top"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
+      <Handle
+        type="target"
+        position={Position.Right}
+        id="right"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
+      <Handle
+        type="target"
+        position={Position.Bottom}
+        id="bottom"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
       <Handle
         type="target"
         position={Position.Left}
+        id="left"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
+      
+      {/* 출력 핸들 (4방향) */}
+      <Handle
+        type="source"
+        position={Position.Top}
+        id="top"
         className="!w-2 !h-2 !bg-surface-600 !border-none"
       />
       <Handle
         type="source"
         position={Position.Right}
+        id="right"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
+      <Handle
+        type="source"
+        position={Position.Bottom}
+        id="bottom"
+        className="!w-2 !h-2 !bg-surface-600 !border-none"
+      />
+      <Handle
+        type="source"
+        position={Position.Left}
+        id="left"
         className="!w-2 !h-2 !bg-surface-600 !border-none"
       />
 

@@ -7,10 +7,12 @@ import { useEffect, useRef } from 'react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { MessageSquare, Loader2 } from 'lucide-react';
 import { useGraphStore } from '../store/graphStore';
+import { useDemoStore } from '../demo/demoStore';
 
 export function TranscriptPanel() {
   const transcripts = useGraphStore((state) => state.transcripts);
   const currentPartialText = useGraphStore((state) => state.currentPartialText);
+  const isDemoMode = useDemoStore((state) => state.isDemoMode);
   const scrollRef = useRef<HTMLDivElement>(null);
 
   // 새 트랜스크립트 추가 시 자동 스크롤
@@ -59,9 +61,11 @@ export function TranscriptPanel() {
                 <p className="text-sm text-gray-200 leading-relaxed">
                   {transcript.text}
                 </p>
-                <span className="text-xs text-gray-500 mt-1 block">
-                  {formatTime(transcript.timestamp)}
-                </span>
+                {!isDemoMode && (
+                  <span className="text-xs text-gray-500 mt-1 block">
+                    {formatTime(transcript.timestamp)}
+                  </span>
+                )}
               </motion.div>
             ))}
 
