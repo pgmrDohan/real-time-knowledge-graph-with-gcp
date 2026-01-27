@@ -17,7 +17,7 @@
 - **피드백 기반 AI 개선** - 사용자 만족도를 학습하여 추출 품질 지속 개선
 
 ### 시각화 기능
-- **Dagre 기반 자동 레이아웃** - 클러스터 기반 균형 잡힌 그래프 배치
+- **d3-force 기반 자동 레이아웃** - 허브 중심 Force-directed 그래프 배치, 자동 겹침 방지
 - **무한 캔버스** - 제한 없는 그래프 확장 및 탐색
 - **실시간 델타 업데이트** - 스트리밍 방식으로 점진적 그래프 업데이트
 
@@ -33,7 +33,7 @@
 │                    Electron Desktop App                      │
 │  ┌─────────────┐  ┌─────────────┐  ┌─────────────────────┐  │
 │  │   Audio     │  │  WebSocket  │  │    React Flow       │  │
-│  │   Capture   │──│   Client    │──│    + Dagre Layout   │  │
+│  │   Capture   │──│   Client    │──│    + d3-force       │  │
 │  └─────────────┘  └──────┬──────┘  └─────────────────────┘  │
 │                          │                                   │
 │  ┌───────────────────────┴───────────────────────────────┐  │
@@ -78,7 +78,7 @@
 │           │   ├── useWebSocket.ts       # WebSocket 통신
 │           │   └── useAudioCapture.ts    # 오디오 캡처
 │           └── /store        # Zustand 상태 관리
-│               └── graphStore.ts         # 그래프 상태 + Dagre 레이아웃
+│               └── graphStore.ts         # 그래프 상태 + d3-force 레이아웃
 ├── /servers
 │   └── /api                  # FastAPI 백엔드 서버
 │       ├── /gcp              # GCP 서비스 모듈

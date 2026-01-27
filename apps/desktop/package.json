@@ -17,9 +17,9 @@
     "lint": "eslint . --ext .ts,.tsx"
   },
   "dependencies": {
-    "@types/dagre": "^0.7.53",
+    "@types/d3-force": "^3.0.10",
     "clsx": "^2.1.1",
-    "dagre": "^0.8.5",
+    "d3-force": "^3.0.0",
     "framer-motion": "^12.26.2",
     "html-to-image": "^1.11.13",
     "jspdf": "^4.0.0",

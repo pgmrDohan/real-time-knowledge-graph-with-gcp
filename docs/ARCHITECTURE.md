@@ -7,7 +7,7 @@
 │                            CLIENT (Electron Desktop App)                      │
 │  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────────────┐   │
 │  │  Audio Capture  │  │   WebSocket     │  │     React Flow              │   │
-│  │  (System Audio) │──│   Client        │──│     + Dagre Layout          │   │
+│  │  (System Audio) │──│   Client        │──│     + d3-force Layout       │   │
 │  └─────────────────┘  └────────┬────────┘  └─────────────────────────────┘   │
 │                                │                                              │
 │  ┌─────────────────────────────┴─────────────────────────────────────────┐   │
@@ -250,19 +250,19 @@
 | 구성 요소 | 설명 |
 |----------|------|
 | TitleBar | 앱 제목, 번역/내보내기 버튼, 윈도우 컨트롤 |
-| KnowledgeGraph | React Flow + Dagre 레이아웃 그래프 |
+| KnowledgeGraph | React Flow + d3-force 레이아웃 그래프 |
 | TranslateDialog | 7개 언어 번역 모달 |
 | ExportDialog | PNG/PDF/Mermaid 내보내기 모달 |
 | FeedbackDialog | 만족도 평가 모달 |
-| graphStore | Zustand 상태 관리 + 클러스터 기반 레이아웃 |
+| graphStore | Zustand 상태 관리 + d3-force 레이아웃 |
 
 ## 레이아웃 알고리즘
 
-### Dagre 기반 클러스터 레이아웃
+### d3-force 기반 레이아웃
 
 ```
 ┌────────────────────────────────────────────────────────────────────────┐
-│                    Layout Algorithm                                     │
+│                    Layout Algorithm (d3-force)                          │
 │                                                                         │
 │  1. Find Connected Components (BFS)                                    │
 │     ┌─────────┐  ┌─────────┐  ┌───┐  ┌───┐                            │
@@ -272,11 +272,18 @@
 │     └─────────┘  └─────────┘                                          │
 │     Component 1   Component 2                                          │
 │                                                                         │
-│  2. Apply Dagre to each component                                      │
-│     - Direction: LR (small) or alternating LR/TB (large)              │
-│     - Ranker: tight-tree (compact)                                    │
+│  2. Calculate Node Degrees & Sort by Hub                               │
+│     - Hub nodes (high degree) placed at center                        │
+│     - Golden angle spiral initialization (deterministic)              │
 │                                                                         │
-│  3. Arrange components in grid                                         │
+│  3. Apply d3-force Simulation                                          │
+│     - forceLink: Connected nodes maintain ideal distance              │
+│     - forceManyBody: All nodes repel (prevent clustering)             │
+│     - forceCollide: Overlap prevention (collision detection)          │
+│     - forceCenter: Keep graph centered                                │
+│     - forceX/Y: Maintain square-like shape                            │
+│                                                                         │
+│  4. Arrange Components in Grid                                         │
 │     ┌─────────────────────────────┬───────────────┐                   │
 │     │     Component 1             │ Component 2   │                   │
 │     │       A ─ B                 │   D ─ E       │                   │
@@ -287,8 +294,9 @@
 │     │       G     H               │               │                   │
 │     └─────────────────────────────┴───────────────┘                   │
 │                                                                         │
-│  4. Smooth transition for existing nodes                               │
-│     new_pos = old_pos * 0.3 + calculated_pos * 0.7                    │
+│  5. Optimize Existing Layout (정리 버튼)                                │
+│     - Preserve existing positions (forceX/Y toward original)          │
+│     - Only resolve overlaps with strong forceCollide                  │
 │                                                                         │
 └────────────────────────────────────────────────────────────────────────┘
 ```

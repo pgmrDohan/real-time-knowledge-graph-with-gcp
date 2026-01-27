@@ -211,24 +211,17 @@ export function useDemoMode(): UseDemoModeReturn {
     // 이후 엔트리들 주기적 처리
     let currentIndex = 1;
     mainTimerRef.current = setInterval(() => {
-      if (!isRunningRef.current || currentIndex >= DEMO_STT_ENTRIES.length) {
+      // 사용자가 중지 버튼을 누른 경우에만 종료
+      if (!isRunningRef.current) {
         clearAllTimers();
-        isRunningRef.current = false;
-        stopDemo();
+        return;
+      }
+      
+      // 모든 데이터 처리 완료 - 타이머만 정리하고 캡처 상태는 유지
+      if (currentIndex >= DEMO_STT_ENTRIES.length) {
+        clearAllTimers();
         setProcessingStage('IDLE');
-        
-        // 데모 완료 시 피드백 다이얼로그 표시
-        const currentGraph = useGraphStore.getState().graphState;
-        if (currentGraph && currentGraph.entities.length > 0) {
-          setTimeout(() => {
-            setFeedbackRequest({
-              sessionId: `demo-${Date.now()}`,
-              entitiesCount: currentGraph.entities.length,
-              relationsCount: currentGraph.relations.length,
-              durationSeconds: Math.floor((DEMO_STT_ENTRIES.length * DEMO_TIMING.STT_INTERVAL) / 1000),
-            });
-          }, 500);
-        }
+        // stopDemo() 호출하지 않음 - 사용자가 멈춤 버튼을 누를 때까지 캡처 상태 유지
         return;
       }
 

@@ -9,7 +9,7 @@ Electron 데스크톱 애플리케이션을 빌드하고 GCP에 배포하는 방
 | 기능 | 설명 |
 |------|------|
 | 🎤 실시간 오디오 캡처 | 시스템 오디오를 캡처하여 STT 처리 |
-| 📊 지식 그래프 시각화 | React Flow + Dagre 레이아웃 |
+| 📊 지식 그래프 시각화 | React Flow + d3-force 레이아웃 |
 | 🌐 다국어 번역 | 7개 언어 지원 (한/영/일/중/스/프/독) |
 | 📤 내보내기 | PNG, PDF, Mermaid 형식 |
 | ⭐ 피드백 | 1-5점 만족도 평가 |
@@ -39,7 +39,7 @@ npm ci
 |--------|------|
 | `react` + `react-dom` | UI 렌더링 |
 | `reactflow` | 그래프 시각화 |
-| `dagre` | 그래프 레이아웃 |
+| `d3-force` | 그래프 레이아웃 (Force-directed) |
 | `zustand` | 상태 관리 |
 | `framer-motion` | 애니메이션 |
 | `html-to-image` | PNG 내보내기 |
@@ -189,13 +189,14 @@ src/
 
 ### 레이아웃 알고리즘
 
-`graphStore.ts`의 `calculateDagreLayout` 함수:
+`graphStore.ts`의 `calculateForceLayout` 함수 (d3-force 기반):
 
 1. **연결된 컴포넌트 찾기**: BFS로 클러스터 분리
-2. **컴포넌트별 Dagre 적용**: 각 클러스터에 개별 레이아웃
-3. **그리드 배치**: 컴포넌트들을 2-4열 그리드로 배치
-4. **고립 노드 처리**: 연결 없는 노드는 별도 영역에 배치
-5. **부드러운 전환**: 기존 위치와 새 위치를 보간
+2. **허브 노드 중심 배치**: 연결이 많은 노드를 중앙에 배치
+3. **d3-force 시뮬레이션**: forceLink, forceManyBody, forceCollide 적용
+4. **그리드 배치**: 컴포넌트들을 그리드로 배치
+5. **고립 노드 처리**: 연결 없는 노드는 별도 영역에 배치
+6. **정리 버튼**: 기존 배치 유지하며 겹침만 해결 (optimizeExistingLayout)
 
 ## 문제 해결
 

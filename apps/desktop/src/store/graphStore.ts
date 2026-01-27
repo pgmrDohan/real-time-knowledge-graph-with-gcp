@@ -1,10 +1,20 @@
 /**
  * Zustand 기반 그래프 상태 관리
- * Dagre 기반 자동 레이아웃 + 무한 캔버스
+ * d3-force 기반 자동 레이아웃 + 무한 캔버스
  */
 
 import { create } from 'zustand';
-import dagre from 'dagre';
+import {
+  forceSimulation,
+  forceLink,
+  forceManyBody,
+  forceCollide,
+  forceCenter,
+  forceX,
+  forceY,
+  type SimulationNodeDatum,
+  type SimulationLinkDatum,
+} from 'd3-force';
 import type { Node, Edge } from 'reactflow';
 import type {
   GraphState,
@@ -34,10 +44,29 @@ const ENTITY_COLORS: Record<string, string> = {
 };
 
 // 노드 크기 상수
-const NODE_WIDTH = 180;
-const NODE_HEIGHT = 80;
-const NODE_SPACING_X = 250;  // 노드 간 가로 간격
-const NODE_SPACING_Y = 120;  // 노드 간 세로 간격
+const NODE_WIDTH = 150;
+const NODE_HEIGHT = 60;
+
+// d3-force 레이아웃 파라미터
+const FORCE_CONFIG = {
+  // 연결된 노드 간 이상적인 거리
+  linkDistance: 250,
+  // 연결 강도 (0~1, 낮을수록 유연)
+  linkStrength: 0.4,
+  // 반발력 강도 (음수: 반발, 양수: 인력)
+  chargeStrength: -1500,
+  // 최대 반발 거리
+  chargeDistanceMax: 800,
+  // 충돌 반경 (노드 크기 기반)
+  collideRadius: Math.max(NODE_WIDTH, NODE_HEIGHT) * 1.2,
+  // 충돌 강도
+  collideStrength: 1.0,
+  // 시뮬레이션 반복 횟수
+  iterations: 400,
+  // 중심 좌표
+  centerX: 400,
+  centerY: 300,
+};
 
 interface TranscriptEntry {
   id: string;
@@ -100,6 +129,21 @@ interface GraphStoreState {
   setShowExportDialog: (show: boolean) => void;
 }
 
+// d3-force 시뮬레이션용 노드 타입
+interface ForceNode extends SimulationNodeDatum {
+  id: string;
+  x?: number;
+  y?: number;
+  vx?: number;
+  vy?: number;
+}
+
+// d3-force 시뮬레이션용 링크 타입
+interface ForceLink extends SimulationLinkDatum<ForceNode> {
+  source: string | ForceNode;
+  target: string | ForceNode;
+}
+
 /**
  * 연결된 컴포넌트(클러스터) 찾기
  */
@@ -154,12 +198,12 @@ function findConnectedComponents(
 }
 
 /**
- * 클러스터 기반 균형 레이아웃
- * - 연결된 컴포넌트별로 dagre 적용
- * - 컴포넌트들을 그리드 형태로 배치
- * - 가로/세로 비율 유지
+ * d3-force 기반 레이아웃 계산
+ * - 자동으로 노드 겹침 방지
+ * - 연결된 노드들을 적절한 거리로 유지
+ * - 전체 그래프를 컴팩트하게 배치
  */
-function calculateDagreLayout(
+function calculateForceLayout(
   entities: GraphEntity[],
   relations: GraphRelation[],
   existingPositions: Map<string, { x: number; y: number }>
@@ -170,16 +214,17 @@ function calculateDagreLayout(
     return positions;
   }
 
+  // 단일 노드는 중앙에 배치
+  if (entities.length === 1) {
+    positions.set(entities[0].id, { 
+      x: FORCE_CONFIG.centerX, 
+      y: FORCE_CONFIG.centerY 
+    });
+    return positions;
+  }
+
   // 연결된 컴포넌트 찾기
   const components = findConnectedComponents(entities, relations);
-  
-  // 각 컴포넌트의 레이아웃 계산
-  const componentLayouts: Array<{
-    positions: Map<string, { x: number; y: number }>;
-    width: number;
-    height: number;
-    entities: GraphEntity[];
-  }> = [];
   
   // 고립 노드(크기 1)와 연결된 컴포넌트 분리
   const isolatedNodes: GraphEntity[] = [];
@@ -193,106 +238,185 @@ function calculateDagreLayout(
     }
   });
   
-  // 연결된 컴포넌트들 레이아웃 계산
-  connectedComponents.forEach(component => {
-    // 해당 컴포넌트의 관계만 필터링
+  // 각 연결된 컴포넌트에 대해 d3-force 시뮬레이션 실행
+  const componentResults: Array<{
+    positions: Map<string, { x: number; y: number }>;
+    width: number;
+    height: number;
+  }> = [];
+  
+  connectedComponents.forEach((component) => {
     const componentIds = new Set(component.map(e => e.id));
     const componentRelations = relations.filter(
       r => componentIds.has(r.source) && componentIds.has(r.target)
     );
     
-    // 컴포넌트 크기에 따라 레이아웃 방향 결정
-    // 작은 컴포넌트는 가로, 큰 컴포넌트는 랜덤하게 방향 변경
-    const direction = component.length > 5 ? (component.length % 2 === 0 ? 'LR' : 'TB') : 'LR';
-    
-    const layout = calculateSingleComponentLayout(
-      component, 
-      componentRelations, 
-      existingPositions,
-      direction as 'TB' | 'LR'
-    );
-    
-    componentLayouts.push(layout);
+    const result = runForceSimulation(component, componentRelations, existingPositions);
+    componentResults.push(result);
   });
   
   // 컴포넌트들을 그리드 형태로 배치
-  arrangeComponentsInGrid(componentLayouts, positions, existingPositions);
+  arrangeComponentsInGrid(componentResults, positions);
   
-  // 고립 노드들은 오른쪽 영역에 별도 배치
-  arrangeIsolatedNodes(isolatedNodes, positions, existingPositions);
+  // 고립 노드들을 별도로 배치
+  arrangeIsolatedNodes(isolatedNodes, positions);
   
-  // 긴 엣지 최소화를 위한 후처리
-  optimizeLongEdges(positions, relations);
+  // 전체 중앙 정렬
+  centerAllPositions(positions);
   
   return positions;
 }
 
+// 호환성을 위한 alias
+const calculateDagreLayout = calculateForceLayout;
+
 /**
- * 단일 컴포넌트 레이아웃 계산
+ * d3-force 시뮬레이션 실행
+ * - 허브 노드(연결 많은 노드)를 중심에 배치
+ * - 결정적(deterministic) 초기화로 일관된 결과
  */
-function calculateSingleComponentLayout(
+function runForceSimulation(
   entities: GraphEntity[],
   relations: GraphRelation[],
-  existingPositions: Map<string, { x: number; y: number }>,
-  direction: 'TB' | 'LR'
+  existingPositions: Map<string, { x: number; y: number }>
 ): {
   positions: Map<string, { x: number; y: number }>;
   width: number;
   height: number;
-  entities: GraphEntity[];
 } {
   const positions = new Map<string, { x: number; y: number }>();
   
-  if (entities.length === 1) {
-    // 단일 노드는 그냥 배치
-    const existing = existingPositions.get(entities[0].id);
-    positions.set(entities[0].id, existing || { x: 0, y: 0 });
-    return { positions, width: NODE_WIDTH, height: NODE_HEIGHT, entities };
-  }
+  // 각 노드의 연결 수(degree) 계산
+  const degrees = new Map<string, number>();
+  entities.forEach(e => degrees.set(e.id, 0));
+  relations.forEach(r => {
+    degrees.set(r.source, (degrees.get(r.source) || 0) + 1);
+    degrees.set(r.target, (degrees.get(r.target) || 0) + 1);
+  });
   
-  // Dagre 그래프 생성
-  const g = new dagre.graphlib.Graph();
-  g.setGraph({
-    rankdir: direction,
-    nodesep: NODE_SPACING_X * 0.8,  // 약간 조밀하게
-    ranksep: NODE_SPACING_Y * 0.8,
-    marginx: 30,
-    marginy: 30,
-    ranker: 'tight-tree',  // 더 컴팩트한 레이아웃
+  // 노드를 degree 순으로 정렬 (허브 노드 먼저)
+  const sortedEntities = [...entities].sort((a, b) => {
+    return (degrees.get(b.id) || 0) - (degrees.get(a.id) || 0);
   });
-  g.setDefaultEdgeLabel(() => ({}));
-
-  // 노드 추가
-  entities.forEach((entity) => {
-    g.setNode(entity.id, {
-      width: NODE_WIDTH,
-      height: NODE_HEIGHT,
-    });
-  });
-
-  // 엣지 추가
-  relations.forEach((relation) => {
-    if (g.hasNode(relation.source) && g.hasNode(relation.target)) {
-      g.setEdge(relation.source, relation.target);
+  
+  // 노드 수에 따라 파라미터 조정
+  const nodeCount = entities.length;
+  const scaleFactor = Math.max(0.6, Math.min(1.0, 20 / nodeCount));
+  
+  // 초기 반경 계산 (노드 수에 비례)
+  const baseRadius = Math.sqrt(nodeCount) * FORCE_CONFIG.linkDistance * 0.4;
+  
+  // 결정적 초기 위치 계산 (허브 중심, 나선형 배치)
+  const initialPositions = new Map<string, { x: number; y: number }>();
+  
+  sortedEntities.forEach((entity, index) => {
+    const existing = existingPositions.get(entity.id);
+    if (existing) {
+      initialPositions.set(entity.id, existing);
+    } else {
+      // 나선형 배치 (황금각 사용으로 균등 분포)
+      const goldenAngle = Math.PI * (3 - Math.sqrt(5)); // ~137.5도
+      const angle = index * goldenAngle;
+      const radius = baseRadius * Math.sqrt(index / nodeCount);
+      
+      initialPositions.set(entity.id, {
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
+      });
     }
   });
-
-  // 레이아웃 계산
-  dagre.layout(g);
-
-  // 결과 추출 및 경계 계산
+  
+  // 시뮬레이션용 노드 생성
+  const nodes: ForceNode[] = entities.map((entity) => {
+    const pos = initialPositions.get(entity.id)!;
+    return {
+      id: entity.id,
+      x: pos.x,
+      y: pos.y,
+    };
+  });
+  
+  // 시뮬레이션용 링크 생성
+  const links: ForceLink[] = relations.map((rel) => ({
+    source: rel.source,
+    target: rel.target,
+  }));
+  
+  // 노드 ID로 빠르게 찾기 위한 맵
+  const nodeMap = new Map(nodes.map(n => [n.id, n]));
+  
+  // d3-force 시뮬레이션 생성
+  const simulation = forceSimulation<ForceNode>(nodes)
+    // 연결된 노드 간 거리 유지
+    .force('link', forceLink<ForceNode, ForceLink>(links)
+      .id(d => d.id)
+      .distance((link) => {
+        // 허브 노드 연결은 더 긴 거리
+        const sourceNode = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
+        const targetNode = typeof link.target === 'string' ? nodeMap.get(link.target) : link.target;
+        if (!sourceNode || !targetNode) return FORCE_CONFIG.linkDistance * scaleFactor;
+        
+        const sourceDegree = degrees.get(sourceNode.id) || 1;
+        const targetDegree = degrees.get(targetNode.id) || 1;
+        const maxDegree = Math.max(sourceDegree, targetDegree);
+        
+        // 허브 노드일수록 연결 거리 증가
+        return FORCE_CONFIG.linkDistance * scaleFactor * (1 + maxDegree * 0.1);
+      })
+      .strength((link) => {
+        // 연결이 많은 노드 간에는 링크 강도 감소 (유연하게)
+        const sourceNode = typeof link.source === 'string' ? nodeMap.get(link.source) : link.source;
+        const targetNode = typeof link.target === 'string' ? nodeMap.get(link.target) : link.target;
+        if (!sourceNode || !targetNode) return FORCE_CONFIG.linkStrength;
+        
+        const sourceDegree = degrees.get(sourceNode.id) || 1;
+        const targetDegree = degrees.get(targetNode.id) || 1;
+        return FORCE_CONFIG.linkStrength / Math.sqrt(Math.min(sourceDegree, targetDegree));
+      })
+    )
+    // 모든 노드 간 반발력
+    .force('charge', forceManyBody<ForceNode>()
+      .strength((d) => {
+        // 허브 노드는 더 강한 반발력
+        const degree = degrees.get(d.id) || 1;
+        return FORCE_CONFIG.chargeStrength * scaleFactor * (1 + degree * 0.2);
+      })
+      .distanceMax(FORCE_CONFIG.chargeDistanceMax)
+    )
+    // 노드 충돌 방지 (겹침 방지)
+    .force('collide', forceCollide<ForceNode>()
+      .radius((d) => {
+        // 허브 노드는 더 큰 충돌 반경
+        const degree = degrees.get(d.id) || 1;
+        return FORCE_CONFIG.collideRadius * scaleFactor * (1 + degree * 0.05);
+      })
+      .strength(FORCE_CONFIG.collideStrength)
+      .iterations(4)
+    )
+    // 수평/수직 분포 (정사각형에 가깝게)
+    .force('x', forceX<ForceNode>(0).strength(0.03))
+    .force('y', forceY<ForceNode>(0).strength(0.03))
+    // 중심으로 모으기
+    .force('center', forceCenter<ForceNode>(0, 0));
+  
+  // 시뮬레이션 실행 (동기적으로)
+  simulation.stop();
+  for (let i = 0; i < FORCE_CONFIG.iterations; i++) {
+    simulation.tick();
+  }
+  
+  // 결과 추출
   let minX = Infinity, maxX = -Infinity;
   let minY = Infinity, maxY = -Infinity;
   
-  g.nodes().forEach((nodeId) => {
-    const node = g.node(nodeId);
-    if (node) {
-      positions.set(nodeId, { x: node.x, y: node.y });
-      minX = Math.min(minX, node.x);
-      maxX = Math.max(maxX, node.x);
-      minY = Math.min(minY, node.y);
-      maxY = Math.max(maxY, node.y);
-    }
+  nodes.forEach((node) => {
+    const x = node.x ?? 0;
+    const y = node.y ?? 0;
+    positions.set(node.id, { x, y });
+    minX = Math.min(minX, x);
+    maxX = Math.max(maxX, x);
+    minY = Math.min(minY, y);
+    maxY = Math.max(maxY, y);
   });
   
   // 원점 기준으로 정규화
@@ -306,131 +430,234 @@ function calculateSingleComponentLayout(
   const width = maxX - minX + NODE_WIDTH;
   const height = maxY - minY + NODE_HEIGHT;
   
-  return { positions, width, height, entities };
+  return { positions, width, height };
 }
 
 /**
  * 컴포넌트들을 그리드 형태로 배치
- * 가로/세로 비율을 유지하면서 균형있게 배치
  */
 function arrangeComponentsInGrid(
-  componentLayouts: Array<{
+  componentResults: Array<{
     positions: Map<string, { x: number; y: number }>;
     width: number;
     height: number;
-    entities: GraphEntity[];
   }>,
-  finalPositions: Map<string, { x: number; y: number }>,
-  existingPositions: Map<string, { x: number; y: number }>
+  finalPositions: Map<string, { x: number; y: number }>
 ): void {
-  if (componentLayouts.length === 0) return;
+  if (componentResults.length === 0) return;
   
-  // 목표 가로/세로 비율 (16:9에 가깝게)
-  const targetAspectRatio = 1.5;
+  // 단일 컴포넌트는 그대로 사용
+  if (componentResults.length === 1) {
+    componentResults[0].positions.forEach((pos, id) => {
+      finalPositions.set(id, pos);
+    });
+    return;
+  }
   
   // 총 면적 계산
   let totalArea = 0;
-  componentLayouts.forEach(layout => {
-    totalArea += (layout.width + NODE_SPACING_X) * (layout.height + NODE_SPACING_Y);
+  componentResults.forEach(result => {
+    totalArea += (result.width + 100) * (result.height + 100);
   });
   
-  // 목표 영역 크기 계산
-  const targetHeight = Math.sqrt(totalArea / targetAspectRatio);
-  const targetWidth = targetHeight * targetAspectRatio;
+  // 정사각형에 가까운 목표 크기
+  const targetWidth = Math.sqrt(totalArea) * 1.3;
   
-  // 그리드 열 수 결정 (2-4열)
-  const cols = Math.max(2, Math.min(4, Math.ceil(Math.sqrt(componentLayouts.length))));
+  // 크기 순으로 정렬 (큰 것 먼저)
+  const sorted = [...componentResults].sort((a, b) => 
+    (b.width * b.height) - (a.width * a.height)
+  );
   
-  // 각 열의 현재 Y 위치
-  const columnHeights = new Array(cols).fill(0);
-  const columnX: number[] = [];
-  
-  // 열 X 위치 계산
+  // 행 기반 배치
   let currentX = 0;
-  for (let i = 0; i < cols; i++) {
-    columnX.push(currentX);
-    currentX += targetWidth / cols + NODE_SPACING_X;
-  }
+  let currentY = 0;
+  let rowHeight = 0;
+  const gap = 120;
   
-  // 컴포넌트들을 열에 배치 (가장 낮은 열에 배치)
-  componentLayouts.forEach((layout) => {
-    // 가장 낮은 열 찾기
-    let minColIdx = 0;
-    let minHeight = columnHeights[0];
-    for (let i = 1; i < cols; i++) {
-      if (columnHeights[i] < minHeight) {
-        minHeight = columnHeights[i];
-        minColIdx = i;
-      }
+  sorted.forEach((result) => {
+    // 현재 행에 맞지 않으면 다음 행으로
+    if (currentX + result.width > targetWidth && currentX > 0) {
+      currentX = 0;
+      currentY += rowHeight + gap;
+      rowHeight = 0;
     }
     
-    const offsetX = columnX[minColIdx];
-    const offsetY = columnHeights[minColIdx];
-    
-    // 컴포넌트 내 노드들 배치
-    layout.positions.forEach((pos, entityId) => {
-      const existing = existingPositions.get(entityId);
-      const newPos = {
-        x: pos.x + offsetX,
-        y: pos.y + offsetY,
-      };
-      
-      // 기존 위치가 있으면 부드럽게 이동
-      if (existing) {
-        finalPositions.set(entityId, {
-          x: existing.x * 0.3 + newPos.x * 0.7,
-          y: existing.y * 0.3 + newPos.y * 0.7,
-        });
-      } else {
-        finalPositions.set(entityId, newPos);
-      }
+    // 컴포넌트 배치
+    result.positions.forEach((pos, id) => {
+      finalPositions.set(id, {
+        x: pos.x + currentX,
+        y: pos.y + currentY,
+      });
     });
     
-    // 열 높이 업데이트
-    columnHeights[minColIdx] += layout.height + NODE_SPACING_Y * 1.5;
+    currentX += result.width + gap;
+    rowHeight = Math.max(rowHeight, result.height);
   });
 }
 
 /**
- * 고립 노드 배치 (연결이 없는 노드)
- * 연결된 그래프와 별도로 오른쪽 영역에 그리드 형태로 배치
+ * 고립 노드들을 그리드로 배치
  */
 function arrangeIsolatedNodes(
   isolatedNodes: GraphEntity[],
-  positions: Map<string, { x: number; y: number }>,
-  existingPositions: Map<string, { x: number; y: number }>
+  positions: Map<string, { x: number; y: number }>
 ): void {
   if (isolatedNodes.length === 0) return;
   
   // 기존 노드들의 경계 찾기
-  let maxX = 0;
+  let minX = 0, maxX = 0;
+  let minY = 0, maxY = 0;
+  let hasExisting = false;
+  
   positions.forEach((pos) => {
-    maxX = Math.max(maxX, pos.x);
+    if (!hasExisting) {
+      minX = maxX = pos.x;
+      minY = maxY = pos.y;
+      hasExisting = true;
+    } else {
+      minX = Math.min(minX, pos.x);
+      maxX = Math.max(maxX, pos.x);
+      minY = Math.min(minY, pos.y);
+      maxY = Math.max(maxY, pos.y);
+    }
   });
   
-  // 고립 노드들을 정사각형에 가까운 그리드로 배치
+  // 고립 노드들을 그리드로 배치
   const cols = Math.ceil(Math.sqrt(isolatedNodes.length));
-  const startX = maxX + NODE_SPACING_X * 2;  // 기존 그래프 오른쪽에 배치
+  const startX = hasExisting ? minX : 0;
+  const startY = hasExisting ? maxY + 150 : 0;
+  const spacing = 180;
   
   isolatedNodes.forEach((entity, index) => {
-    const existing = existingPositions.get(entity.id);
-    if (existing) {
-      // 기존 위치 유지
-      positions.set(entity.id, existing);
-    } else {
-      const row = Math.floor(index / cols);
-      const col = index % cols;
-      positions.set(entity.id, {
-        x: startX + col * (NODE_WIDTH + NODE_SPACING_X * 0.5),
-        y: row * (NODE_HEIGHT + NODE_SPACING_Y * 0.5),
-      });
-    }
+    const row = Math.floor(index / cols);
+    const col = index % cols;
+    positions.set(entity.id, {
+      x: startX + col * spacing,
+      y: startY + row * spacing,
+    });
   });
 }
 
 /**
- * 증분 레이아웃: 새 노드만 위치 계산
- * 기존 노드 위치는 최대한 유지하면서 새 노드만 적절히 배치
+ * 전체 위치를 캔버스 중앙으로 정렬
+ */
+function centerAllPositions(positions: Map<string, { x: number; y: number }>): void {
+  if (positions.size === 0) return;
+  
+  let minX = Infinity, maxX = -Infinity;
+  let minY = Infinity, maxY = -Infinity;
+  
+  positions.forEach(pos => {
+    minX = Math.min(minX, pos.x);
+    maxX = Math.max(maxX, pos.x);
+    minY = Math.min(minY, pos.y);
+    maxY = Math.max(maxY, pos.y);
+  });
+  
+  const centerX = (maxX + minX) / 2;
+  const centerY = (maxY + minY) / 2;
+  
+  // 캔버스 중심으로 이동
+  positions.forEach((pos, id) => {
+    positions.set(id, {
+      x: pos.x - centerX + FORCE_CONFIG.centerX,
+      y: pos.y - centerY + FORCE_CONFIG.centerY,
+    });
+  });
+}
+
+/**
+ * 기존 레이아웃 최적화 (정리 버튼용)
+ * - 기존 배치를 최대한 유지
+ * - 겹치는 노드만 밀어내기
+ * - 연결된 노드 간 거리 약간 조정
+ */
+function optimizeExistingLayout(
+  entities: GraphEntity[],
+  relations: GraphRelation[],
+  existingPositions: Map<string, { x: number; y: number }>
+): Map<string, { x: number; y: number }> {
+  const positions = new Map<string, { x: number; y: number }>();
+  
+  // 기존 위치 복사
+  entities.forEach((entity) => {
+    const existing = existingPositions.get(entity.id);
+    if (existing) {
+      positions.set(entity.id, { ...existing });
+    } else {
+      positions.set(entity.id, { x: FORCE_CONFIG.centerX, y: FORCE_CONFIG.centerY });
+    }
+  });
+  
+  if (entities.length <= 1) {
+    return positions;
+  }
+  
+  // 시뮬레이션용 노드 생성 (기존 위치 사용)
+  const nodes: ForceNode[] = entities.map((entity) => {
+    const pos = positions.get(entity.id)!;
+    return {
+      id: entity.id,
+      x: pos.x,
+      y: pos.y,
+    };
+  });
+  
+  // 시뮬레이션용 링크 생성
+  const links: ForceLink[] = relations.map((rel) => ({
+    source: rel.source,
+    target: rel.target,
+  }));
+  
+  // 짧은 시뮬레이션으로 겹침만 해결 (기존 배치 최대한 유지)
+  const simulation = forceSimulation<ForceNode>(nodes)
+    // 연결된 노드 간 거리 (약한 힘으로)
+    .force('link', forceLink<ForceNode, ForceLink>(links)
+      .id(d => d.id)
+      .distance(FORCE_CONFIG.linkDistance * 0.8)
+      .strength(0.1)  // 약한 힘으로 기존 배치 유지
+    )
+    // 약한 반발력 (겹침 방지용)
+    .force('charge', forceManyBody<ForceNode>()
+      .strength(-200)  // 약한 반발력
+      .distanceMax(300)
+    )
+    // 강한 충돌 방지 (겹침 해결 핵심)
+    .force('collide', forceCollide<ForceNode>()
+      .radius(FORCE_CONFIG.collideRadius * 1.1)
+      .strength(1.0)
+      .iterations(5)
+    )
+    // 중심 유지 (기존 배치의 중심 유지)
+    .force('x', forceX<ForceNode>((d) => {
+      const existing = existingPositions.get(d.id);
+      return existing?.x ?? 0;
+    }).strength(0.3))  // 기존 X 위치로 끌어당김
+    .force('y', forceY<ForceNode>((d) => {
+      const existing = existingPositions.get(d.id);
+      return existing?.y ?? 0;
+    }).strength(0.3));  // 기존 Y 위치로 끌어당김
+  
+  // 짧은 시뮬레이션 (겹침 해결에 충분)
+  simulation.stop();
+  for (let i = 0; i < 150; i++) {
+    simulation.tick();
+  }
+  
+  // 결과 추출
+  nodes.forEach((node) => {
+    positions.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
+  });
+  
+  // 중앙 정렬
+  centerAllPositions(positions);
+  
+  return positions;
+}
+
+/**
+ * 증분 레이아웃: 새 노드만 위치 계산 (d3-force 기반)
+ * 기존 노드 위치는 고정하고 새 노드만 힘 기반으로 배치
  */
 function calculateIncrementalLayout(
   entities: GraphEntity[],
@@ -448,17 +675,21 @@ function calculateIncrementalLayout(
     }
   });
 
-  // 새 노드 위치 계산
+  // 새 노드가 없으면 기존 위치 반환
+  if (newEntityIds.size === 0) {
+    return positions;
+  }
+
+  // 새 노드들의 초기 위치 계산 (연결된 노드 근처)
   const newEntities = entities.filter((e) => newEntityIds.has(e.id));
   
   newEntities.forEach((newEntity) => {
-    // 연결된 기존 노드 찾기
     const connectedRelations = relations.filter(
       (r) => r.source === newEntity.id || r.target === newEntity.id
     );
     
     if (connectedRelations.length > 0) {
-      // 연결된 노드들의 평균 위치 근처에 배치
+      // 연결된 노드들의 평균 위치 계산
       let sumX = 0, sumY = 0, count = 0;
       
       connectedRelations.forEach((rel) => {
@@ -472,63 +703,79 @@ function calculateIncrementalLayout(
       });
       
       if (count > 0) {
-        // 평균 위치에서 약간 오프셋
+        // 평균 위치에서 약간 떨어진 곳에 초기 배치
         const avgX = sumX / count;
         const avgY = sumY / count;
         const angle = Math.random() * Math.PI * 2;
-        const distance = NODE_SPACING_X * 0.8;
+        const distance = FORCE_CONFIG.linkDistance * 0.7;
         
         positions.set(newEntity.id, {
           x: avgX + Math.cos(angle) * distance,
           y: avgY + Math.sin(angle) * distance,
         });
       } else {
-        // 연결된 노드가 아직 위치가 없으면 기본 위치
-        positions.set(newEntity.id, { x: 400, y: 300 });
+        positions.set(newEntity.id, { 
+          x: FORCE_CONFIG.centerX, 
+          y: FORCE_CONFIG.centerY 
+        });
       }
     } else {
-      // 연결이 없는 새 노드는 우측 하단에 배치
-      let maxX = 0, maxY = 0;
+      // 연결이 없으면 기존 그래프 하단에 배치
+      let maxY = FORCE_CONFIG.centerY;
       positions.forEach((pos) => {
-        maxX = Math.max(maxX, pos.x);
         maxY = Math.max(maxY, pos.y);
       });
       
       positions.set(newEntity.id, {
-        x: maxX + NODE_SPACING_X,
-        y: maxY > 0 ? maxY : 300,
+        x: FORCE_CONFIG.centerX + (Math.random() - 0.5) * 100,
+        y: maxY + 150,
       });
     }
   });
 
-  // 충돌 해결: 새 노드가 기존 노드와 겹치면 이동
-  newEntities.forEach((newEntity) => {
-    const newPos = positions.get(newEntity.id)!;
-    let attempts = 0;
-    const maxAttempts = 10;
-    
-    while (attempts < maxAttempts) {
-      let hasCollision = false;
-      
-      for (const [otherId, otherPos] of positions) {
-        if (otherId === newEntity.id) continue;
-        
-        const dx = Math.abs(newPos.x - otherPos.x);
-        const dy = Math.abs(newPos.y - otherPos.y);
-        
-        if (dx < NODE_WIDTH + 20 && dy < NODE_HEIGHT + 20) {
-          hasCollision = true;
-          // 충돌 시 이동
-          const angle = Math.atan2(newPos.y - otherPos.y, newPos.x - otherPos.x);
-          newPos.x += Math.cos(angle) * 50;
-          newPos.y += Math.sin(angle) * 50;
-          break;
-        }
-      }
-      
-      if (!hasCollision) break;
-      attempts++;
-    }
+  // 새 노드에 대해 mini force simulation 실행 (기존 노드는 고정)
+  const nodes: ForceNode[] = entities.map((entity) => {
+    const pos = positions.get(entity.id) || { x: 0, y: 0 };
+    return {
+      id: entity.id,
+      x: pos.x,
+      y: pos.y,
+      // 기존 노드는 고정
+      fx: newEntityIds.has(entity.id) ? undefined : pos.x,
+      fy: newEntityIds.has(entity.id) ? undefined : pos.y,
+    };
+  });
+  
+  const links: ForceLink[] = relations.map((rel) => ({
+    source: rel.source,
+    target: rel.target,
+  }));
+  
+  // 짧은 시뮬레이션으로 새 노드만 조정
+  const simulation = forceSimulation<ForceNode>(nodes)
+    .force('link', forceLink<ForceNode, ForceLink>(links)
+      .id(d => d.id)
+      .distance(FORCE_CONFIG.linkDistance * 0.8)
+      .strength(0.5)
+    )
+    .force('charge', forceManyBody<ForceNode>()
+      .strength(-400)
+      .distanceMax(300)
+    )
+    .force('collide', forceCollide<ForceNode>()
+      .radius(FORCE_CONFIG.collideRadius)
+      .strength(1)
+      .iterations(2)
+    );
+  
+  simulation.stop();
+  for (let i = 0; i < 100; i++) {
+    simulation.tick();
+  }
+  
+  // 결과 추출
+  nodes.forEach((node) => {
+    positions.set(node.id, { x: node.x ?? 0, y: node.y ?? 0 });
   });
 
   return positions;
@@ -602,100 +849,6 @@ function styleEdges(
   });
 }
 
-/**
- * 긴 엣지 최소화를 위한 레이아웃 후처리
- * 연결된 노드들이 너무 멀리 떨어져 있으면 더 가깝게 조정
- */
-function optimizeLongEdges(
-  positions: Map<string, { x: number; y: number }>,
-  relations: GraphRelation[],
-  maxEdgeLength: number = NODE_SPACING_X * 3
-): void {
-  const MAX_ITERATIONS = 5;
-  
-  for (let iteration = 0; iteration < MAX_ITERATIONS; iteration++) {
-    let adjusted = false;
-    
-    for (const relation of relations) {
-      const sourcePos = positions.get(relation.source);
-      const targetPos = positions.get(relation.target);
-      
-      if (!sourcePos || !targetPos) continue;
-      
-      const dx = targetPos.x - sourcePos.x;
-      const dy = targetPos.y - sourcePos.y;
-      const distance = Math.sqrt(dx * dx + dy * dy);
-      
-      // 엣지가 너무 길면 조정
-      if (distance > maxEdgeLength) {
-        // 중점 방향으로 양쪽 노드를 20%씩 이동
-        const ratio = 0.2;
-        const midX = (sourcePos.x + targetPos.x) / 2;
-        const midY = (sourcePos.y + targetPos.y) / 2;
-        
-        // source를 중점 방향으로 이동
-        sourcePos.x = sourcePos.x + (midX - sourcePos.x) * ratio;
-        sourcePos.y = sourcePos.y + (midY - sourcePos.y) * ratio;
-        
-        // target을 중점 방향으로 이동
-        targetPos.x = targetPos.x + (midX - targetPos.x) * ratio;
-        targetPos.y = targetPos.y + (midY - targetPos.y) * ratio;
-        
-        adjusted = true;
-      }
-    }
-    
-    // 더 이상 조정할 것이 없으면 종료
-    if (!adjusted) break;
-  }
-  
-  // 노드 간 겹침 해결
-  resolveNodeOverlaps(positions);
-}
-
-/**
- * 노드 겹침 해결
- */
-function resolveNodeOverlaps(
-  positions: Map<string, { x: number; y: number }>
-): void {
-  const posArray = Array.from(positions.entries());
-  const minDistanceX = NODE_WIDTH + 30;
-  const minDistanceY = NODE_HEIGHT + 20;
-  
-  for (let i = 0; i < posArray.length; i++) {
-    for (let j = i + 1; j < posArray.length; j++) {
-      const [, pos1] = posArray[i];
-      const [, pos2] = posArray[j];
-      
-      const dx = Math.abs(pos2.x - pos1.x);
-      const dy = Math.abs(pos2.y - pos1.y);
-      
-      // 겹치는 경우
-      if (dx < minDistanceX && dy < minDistanceY) {
-        // 밀어내기
-        const pushX = (minDistanceX - dx) / 2 + 10;
-        const pushY = (minDistanceY - dy) / 2 + 10;
-        
-        if (pos1.x < pos2.x) {
-          pos1.x -= pushX;
-          pos2.x += pushX;
-        } else {
-          pos1.x += pushX;
-          pos2.x -= pushX;
-        }
-        
-        if (pos1.y < pos2.y) {
-          pos1.y -= pushY;
-          pos2.y += pushY;
-        } else {
-          pos1.y += pushY;
-          pos2.y -= pushY;
-        }
-      }
-    }
-  }
-}
 
 // 엔티티를 React Flow 노드로 변환
 function entityToNode(
@@ -761,9 +914,9 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
   isTranslating: false,
   showExportDialog: false,
 
-  // 전체 그래프 상태 설정 (Dagre 레이아웃)
+  // 전체 그래프 상태 설정 (d3-force 레이아웃)
   setGraphState: (state) => {
-    const positions = calculateDagreLayout(
+    const positions = calculateForceLayout(
       state.entities,
       state.relations,
       new Map()
@@ -830,8 +983,8 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
     if (addedIds.size > 0 || delta.addedRelations.length > 0) {
       // 새 노드/관계가 있으면 레이아웃 재계산
       if (addedIds.size > 5 || newEntities.length > 20) {
-        // 많은 변경이 있으면 전체 Dagre 레이아웃
-        positions = calculateDagreLayout(
+        // 많은 변경이 있으면 전체 d3-force 레이아웃
+        positions = calculateForceLayout(
           newEntities,
           newRelations,
           existingPositions
@@ -934,16 +1087,22 @@ export const useGraphStore = create<GraphStoreState>((set, get) => ({
       currentPartialText: '',
     }),
 
-  // 그래프 레이아웃 재정렬 (Dagre 알고리즘 재실행)
+  // 그래프 레이아웃 재정렬 (기존 배치 유지하면서 겹침 해결)
   reorganizeGraph: () => {
     const currentState = get().graphState;
     if (!currentState || currentState.entities.length === 0) return;
 
-    // Dagre 레이아웃 새로 계산 (기존 위치 무시)
-    const positions = calculateDagreLayout(
+    // 기존 노드 위치 가져오기
+    const currentNodes = get().nodes;
+    const existingPositions = new Map(
+      currentNodes.map((n) => [n.id, n.position])
+    );
+
+    // 기존 위치를 기반으로 겹침만 해결하는 최적화 실행
+    const positions = optimizeExistingLayout(
       currentState.entities,
       currentState.relations,
-      new Map() // 빈 맵 전달 → 기존 위치 무시하고 완전히 새로 계산
+      existingPositions
     );
 
     const nodes = currentState.entities.map((entity) => {
