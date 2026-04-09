@@ -24,7 +24,7 @@ kiwipiepy==0.22.2
 # Utilities
 python-dotenv
 structlog==25.5.0
-orjson==3.11.5
+orjson==3.11.6
 
 # Development
 black
